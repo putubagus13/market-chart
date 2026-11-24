@@ -2559,6 +2559,16 @@ export interface VelaCoreMessageCatalog {
     'widget.topbar.timeframe': string;
     'widget.topbar.timeframes': string;
     'widget.topbar.undo': string;
+    'widget.watchlist.addCurrent': string;
+    'widget.watchlist.addPlaceholder': string;
+    'widget.watchlist.already': string;
+    'widget.watchlist.colChange': string;
+    'widget.watchlist.colLast': string;
+    'widget.watchlist.colSymbol': string;
+    'widget.watchlist.empty': string;
+    'widget.watchlist.notFound': string;
+    'widget.watchlist.remove': string;
+    'widget.watchlist.title': string;
     'widget.watermark.mark': string;
     'widget.watermark.replay': string;
     'workspace.alerts.drawerTitle': string;

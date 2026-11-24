@@ -88,9 +88,11 @@ import { injectChromeStyles } from '../ui/chromeStyles';
 import { css } from '@luxalgo/vela-ui/css';
 import { t } from '@luxalgo/vela-ui/t';
 import { installReplayControls } from '../widget/replay/replay-controls';
+import { installWatchlist } from '../widget/watchlist/watchlist-panel';
 
 // Built-in trading tools: contributions through the public seams, like any plugin's.
 installReplayControls();
+installWatchlist();
 
 /**
  * The workspace options: the widget's chart vocabulary + the shared shell surface + the

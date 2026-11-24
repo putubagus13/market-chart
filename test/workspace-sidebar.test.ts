@@ -96,7 +96,7 @@ describe('the sidebar option', () => {
         expect(bar.getAttribute('aria-label')).toBe('Sidebar');
         expect(root.hasAttribute('data-vela-sidebar')).toBe(true);
         expect(ws.context().sidebar.enabled).toBe(true);
-        expect(entries(root)).toEqual({ top: ['probe.watch'], bottom: ['objects', 'dataWindow'] });
+        expect(entries(root)).toEqual({ top: ['vela.watchlist', 'probe.watch'], bottom: ['objects', 'dataWindow'] });
 
         button(root, 'probe.watch').click();
         expect(ws.context().panels.openId()).toBe('probe.watch');

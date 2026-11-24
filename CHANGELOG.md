@@ -10,6 +10,9 @@ All notable changes to Vela, newest first.
   bar you click, and a strip above the bottom bar lets you play and pause, move forward one
   bar, pick the speed from 0.5× to 10×, jump to a date from a calendar, pick another start
   bar, and leave the replay. It shows the current bar time and the bars left.
+- **Watchlist.** A side panel lists your symbols with their last price and the day's change.
+  Click a row to show that symbol, type a ticker to add one, drag rows to reorder them, and
+  remove the ones you no longer follow. The list is saved with the workspace.
 
 ### Changed
 
