@@ -13,6 +13,15 @@ All notable changes to Vela, newest first.
 - **Watchlist.** A side panel lists your symbols with their last price and the day's change.
   Click a row to show that symbol, type a ticker to add one, drag rows to reorder them, and
   remove the ones you no longer follow. The list is saved with the workspace.
+- **Trade simulator.** A side panel for backtesting by hand during a bar replay. Buy or Sell
+  places a long or short position at the replayed price with a stop loss and a take profit
+  you drag on the chart, with the risk:reward shown as you go. Once placed, the replay closes
+  the trade when a bar reaches either level. Closed trades build a history you can prune, and
+  statistics: win rate, wins and losses, net and average result, maximum drawdown in pips and
+  in risk multiples, the longest losing and winning streaks, and the risk:reward that has paid
+  best so far with how often trades reached it. The Stats tab draws this as an equity curve, a
+  bar per trade, and a drawdown curve, with the win/loss split and the target ratios as bars.
+  You can set the pip size per symbol, so pips can count in the unit you trade in.
 
 ### Changed
 

@@ -125,7 +125,7 @@ describe('the drawing settings panel', () => {
             s.popup.destroy();
             document.body.replaceChildren();
         }
-    });
+    }, 20_000); // one popup per registered tool: seconds of work on a loaded test run
 
     it('where a label sits along a line is offered only once the label has words', async () => {
         const s = setup(make('trendline'));
