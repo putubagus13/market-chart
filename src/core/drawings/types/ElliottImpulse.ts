@@ -1,10 +1,10 @@
-import { PatternDrawing } from './PatternDrawing';
+import { ElliottWave } from './ElliottWave';
 
-/** Elliott impulse wave — a 5-point polyline labelled 1–5. */
-export class ElliottImpulse extends PatternDrawing {
+/** Elliott impulse wave — a 6-point polyline labelled 0–5, the origin first. */
+export class ElliottImpulse extends ElliottWave {
     readonly type = 'elliottimpulse' as const;
 
     vertexLabels(): readonly string[] {
-        return ['1', '2', '3', '4', '5'];
+        return ['0', '1', '2', '3', '4', '5'];
     }
 }

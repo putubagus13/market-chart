@@ -336,8 +336,8 @@ panel, marking where it happened.
 |---|---|---|
 | XABCD Pattern | `xabcd` | A 5-point labelled pattern with leg ratios. |
 | ABCD Pattern | `abcd` | A 4-point ABCD pattern. |
-| Elliott Impulse Wave (1-5) | `elliottimpulse` | A 5-wave impulse labelled 1–5. |
-| Elliott Correction Wave (ABC) | `elliottcorrection` | A 3-wave correction labelled A–B–C. |
+| Elliott Impulse Wave (0-5) | `elliottimpulse` | A 5-wave impulse counted from its origin: six points labelled 0–5. |
+| Elliott Correction Wave (0-ABC) | `elliottcorrection` | A 3-wave correction counted from its origin: four points labelled 0, A, B, C. |
 | Head & Shoulders | `headshoulders` | A labelled head-and-shoulders with a neckline. |
 | Gartley | `gartley` | Harmonic pattern; legs validated against Gartley's Fib bands. |
 | Bat | `bat` | Harmonic pattern validated against Bat ratios. |

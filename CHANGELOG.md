@@ -2,6 +2,15 @@
 
 All notable changes to Vela, newest first.
 
+## [Unreleased]
+
+### Changed
+
+- **Elliott wave counts start at 0.** The Elliott Impulse Wave tool now places six points
+  labelled 0 to 5, and the Elliott Correction Wave tool places four points labelled 0, A,
+  B, C, so each count begins where the move starts. Counts saved before this change open
+  with a 0 point added in front of their first wave, so they still read correctly.
+
 ## [0.10.15]
 
 ### Added

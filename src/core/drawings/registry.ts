@@ -873,8 +873,8 @@ registerDrawingType({
 // ── patterns ──
 const XABCD_ICON = svg24('<path d="M3 18 7 8 11 14 15 6 20 16"/>');
 const ABCD_ICON = svg24('<path d="M4 17 9 7 14 15 20 5"/>');
-const ELLIOTT_IMPULSE_ICON = svg24('<path d="M3 19 8 9 12 13 17 5 21 9"/>');
-const ELLIOTT_CORRECTION_ICON = svg24('<path d="M4 7 11 16 20 9"/>');
+const ELLIOTT_IMPULSE_ICON = svg24('<path d="M2 20 6 11 9 15 14 5 18 10 22 4"/>');
+const ELLIOTT_CORRECTION_ICON = svg24('<path d="M3 18 8 6 14 15 21 8"/>');
 const HEAD_SHOULDERS_ICON = svg24('<path d="M3 18 6 12 9 16 12 5 15 16 18 12 21 18"/>');
 
 registerDrawingType({
@@ -898,7 +898,7 @@ registerDrawingType({
 registerDrawingType({
     type: 'elliottimpulse',
     group: 'patterns',
-    label: msg('drawing.elliottimpulse.label', 'Elliott Impulse Wave (1-5)'),
+    label: msg('drawing.elliottimpulse.label', 'Elliott Impulse Wave (0-5)'),
     icon: ELLIOTT_IMPULSE_ICON,
     defaultStyle: { lineColor: DEFAULT_DRAWING_COLOR, lineWidth: 1, lineStyle: 'solid' },
     create: (init) => new ElliottImpulse(init),
@@ -907,7 +907,7 @@ registerDrawingType({
 registerDrawingType({
     type: 'elliottcorrection',
     group: 'patterns',
-    label: msg('drawing.elliottcorrection.label', 'Elliott Correction Wave (ABC)'),
+    label: msg('drawing.elliottcorrection.label', 'Elliott Correction Wave (0-ABC)'),
     icon: ELLIOTT_CORRECTION_ICON,
     defaultStyle: { lineColor: DEFAULT_DRAWING_COLOR, lineWidth: 1, lineStyle: 'solid' },
     create: (init) => new ElliottCorrection(init),
