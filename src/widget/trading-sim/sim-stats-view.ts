@@ -74,13 +74,13 @@ const CSS = css`@layer vela.chrome {
 .vela-sim-split-head:where(:not([hidden])) { display: flex; justify-content: space-between; color: ${t.fg.muted}; margin-bottom: 6px; }
 .vela-sim-split-head strong { color: ${t.fg.bright}; font-weight: 600; }
 .vela-sim-split:where(:not([hidden])) { display: flex; gap: 2px; height: 8px; }
-.vela-sim-seg { border-radius: 4px; min-width: 0; }
+.vela-sim-seg { border-radius: ${t.radius.sm}; min-width: 0; }
 .vela-sim-seg[data-kind='win'] { background: ${t.profit}; }
 .vela-sim-seg[data-kind='loss'] { background: ${t.loss}; }
 .vela-sim-seg[data-kind='even'] { background: ${t.fg.faint}; }
 .vela-sim-legend:where(:not([hidden])) { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; color: ${t.fg.muted}; }
 .vela-sim-key:where(:not([hidden])) { display: inline-flex; align-items: center; gap: 6px; }
-.vela-sim-key::before { content: ''; width: 8px; height: 8px; border-radius: 2px; background: var(--_key); }
+.vela-sim-key::before { content: ''; width: 8px; height: 8px; border-radius: ${t.radius.sm}; background: var(--_key); }
 .vela-sim-kpis:where(:not([hidden])) { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 /* Chart boxes include their axis band, so a card never scrolls inside. */
 .vela-sim-plot { position: relative; }
@@ -97,8 +97,8 @@ const CSS = css`@layer vela.chrome {
     gap: 4px 10px;
 }
 .vela-sim-ratio-name { color: ${t.fg.bright}; font-weight: 600; font-variant-numeric: tabular-nums; }
-.vela-sim-ratio-track { height: 8px; border-radius: 4px; background: ${t.border.soft}; overflow: hidden; }
-.vela-sim-ratio-fill { display: block; height: 100%; border-radius: 4px; background: ${t.profit}; }
+.vela-sim-ratio-track { height: 8px; border-radius: ${t.radius.sm}; background: ${t.border.soft}; overflow: hidden; }
+.vela-sim-ratio-fill { display: block; height: 100%; border-radius: ${t.radius.sm}; background: ${t.profit}; }
 .vela-sim-ratio[data-recommended] .vela-sim-ratio-fill { background: ${t.accent}; }
 .vela-sim-ratio-figure { color: ${t.fg}; font-variant-numeric: tabular-nums; white-space: nowrap; unicode-bidi: isolate; }
 .vela-sim-ratio-badge { grid-column: 2 / -1; justify-self: start; }

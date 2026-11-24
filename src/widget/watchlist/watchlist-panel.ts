@@ -49,11 +49,11 @@ const CSS = css`@layer vela.chrome {
 }
 .vela-wl-head { height: 26px; color: ${t.fg.muted}; font-size: 11px; border-bottom: 1px solid ${t.border.soft}; }
 .vela-wl-list { flex: 1; min-height: 0; overflow-y: auto; }
-.vela-wl-row { height: 34px; cursor: pointer; border-inline-start: 2px solid transparent; }
+.vela-wl-row { height: 34px; cursor: pointer; border-inline-start: 2px solid transparent; border-top: 2px solid transparent; }
 .vela-wl-row:hover { background: ${t.hover}; }
 .vela-wl-row[data-active] { background: ${t.hover.strong}; border-inline-start-color: ${t.accent}; }
 .vela-wl-row[data-dragging] { opacity: 0.4; }
-.vela-wl-row[data-drop] { box-shadow: inset 0 2px 0 ${t.accent}; }
+.vela-wl-row[data-drop] { border-top-color: ${t.accent}; }
 .vela-wl-sym:where(:not([hidden])) { display: flex; align-items: center; gap: 8px; min-width: 0; color: ${t.fg.bright}; font-weight: 600; }
 .vela-wl-sym-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vela-wl-icon:where(:not([hidden])) {
@@ -66,7 +66,8 @@ const CSS = css`@layer vela.chrome {
 .vela-wl-num[data-dir='up'] { color: ${t.up}; }
 .vela-wl-num[data-dir='down'] { color: ${t.down}; }
 .vela-wl-row .vela-wl-remove { visibility: hidden; }
-.vela-wl-row:hover .vela-wl-remove, .vela-wl-remove:focus-visible { visibility: visible; }
+.vela-wl-remove:focus-visible { visibility: visible; }
+.vela-wl-row:hover .vela-wl-remove { visibility: visible; }
 .vela-wl-empty { padding: 20px 10px; text-align: center; color: ${t.fg.muted}; font-size: 12px; }
 
 }`;
