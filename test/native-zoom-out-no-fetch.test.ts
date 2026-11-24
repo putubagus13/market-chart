@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
-// Zooming out past the loaded bars shows the empty past; it is not a request for more
-// history. The depth a chart loads is the `bars` it was given, loaded once: no zoom or
-// pan through the empty area reaches the data source, however often the view changes
-// and even though the source holds older bars.
+// Zooming out past the loaded bars reaches the oldest one, which loads older history
+// once — up to the start of what the source holds. Moving through the empty area after
+// that reaches the data source no more, however often the view changes.
 import { afterAll, afterEach, beforeAll, describe, it, expect } from 'vitest';
 import { Vela } from '../src/index';
 import { NativeRenderer } from '../src/renderers/native/NativeRenderer';
@@ -58,7 +57,7 @@ describe('zooming out past the loaded bars', () => {
         document.body.replaceChildren();
     });
 
-    it('fetches nothing, however far and however often the view moves through the empty area', async () => {
+    it('extends to the start of the source once, then fetches nothing however the view moves', async () => {
         const host = document.createElement('div');
         document.body.append(host);
         const feed = new CountingFeed();
@@ -72,17 +71,21 @@ describe('zooming out past the loaded bars', () => {
         const anyR = renderer as any;
         anyR.coords.setSize(WIDTH, 300, 1);
         expect(anyR.coords.barCount).toBe(103);
-        const after = { loads: feed.loads, ranges: feed.ranges };
-        expect(after.loads).toBe(1);
+        expect(feed.loads).toBe(1);
+        expect(feed.ranges).toBe(0);
 
         let viewportEvents = 0;
         chart.on('viewport:changed', () => (viewportEvents += 1));
 
-        // Wheel out to the minimum spacing, right edge pinned: the empty past fills the plot.
+        // Wheel out to the minimum spacing, right edge pinned: the oldest bar comes into view.
         for (let i = 0; i < 40; i += 1) anyR.zoomTo(anyR.coords.getViewport().barSpacing * 0.8, anyR.coords.rightEdgeLogical, WIDTH);
         expect(anyR.coords.getViewport().barSpacing).toBe(MIN_BAR_SPACING);
-        expect(anyR.coords.visibleTimeRange().from).toBeLessThan(feed.all[feed.all.length - 103]!.time);
         await new Promise((r) => setTimeout(r, AFTER_DEBOUNCE_MS));
+        await chart.historyComplete();
+        expect(anyR.coords.barCount).toBe(1000); // the whole source
+        const after = { loads: feed.loads, ranges: feed.ranges };
+        expect(after.loads).toBe(1);
+        expect(after.ranges).toBeGreaterThan(0);
 
         // Pan back and forth through the empty past and future, then zoom in and out again.
         for (const rightOffset of [600, 1500, 2300, -50, 900]) {
@@ -97,10 +100,10 @@ describe('zooming out past the loaded bars', () => {
 
         expect(viewportEvents).toBeGreaterThan(50); // the view really moved
         expect({ loads: feed.loads, ranges: feed.ranges }).toEqual(after);
-        expect(anyR.coords.barCount).toBe(103);
+        expect(anyR.coords.barCount).toBe(1000);
         // What the chart reports as visible never leaves the loaded bars.
         const range = chart.getVisibleRange()!;
-        expect(range.from).toBeGreaterThanOrEqual(feed.all[feed.all.length - 103]!.time);
+        expect(range.from).toBeGreaterThanOrEqual(feed.all[0]!.time);
         expect(range.to).toBeLessThanOrEqual(feed.all[feed.all.length - 1]!.time);
     });
 });

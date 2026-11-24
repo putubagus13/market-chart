@@ -7,7 +7,7 @@ import type { IndicatorModel } from '../model/indicator';
 import type { ValuePatch, SeriesValueDelta } from '../model/patch';
 import { isLineLikeSeries } from '../model/series';
 import type { InputSchema, InputValue } from '../model/inputs';
-import { normalizeSession, type VelaTheme, type MarketConfig, type MarketSwitch, type MarketSnapshot, type AddIndicatorOptions, type PriceStyle, type MoveTarget, type PaneInfo } from '../options';
+import { DEFAULT_BARS, normalizeSession, type VelaTheme, type MarketConfig, type MarketSwitch, type MarketSnapshot, type AddIndicatorOptions, type PriceStyle, type MoveTarget, type PaneInfo } from '../options';
 import type { PaneController } from '../PanesControl';
 import type { PaneAction } from '../ports/IChartRenderer';
 import type { CodeUpdateResult, IndicatorHandle } from '../IndicatorHandle';
@@ -84,6 +84,12 @@ const SINGLE_LOAD_BARS = 5_000;
  * stalls silently and lands as a single main-thread-freezing parse).
  */
 const CHUNK_BARS = 10_000;
+/** The most a session flip deepens the reload to keep the carried window in reach. */
+const CARRY_MAX_BARS = 20_000;
+/** Scrolling to within this many bars of the oldest loaded one loads older history. */
+const SCROLL_BACK_EDGE_BARS = 50;
+/** Bars each scroll-back extension adds. */
+const SCROLL_BACK_BARS = SINGLE_LOAD_BARS;
 /**
  * A progressive source's FIRST paint waits for at least this many bars (or the full ask,
  * whichever is smaller): the first paint is the frame the renderer sizes the view against,
@@ -232,6 +238,11 @@ export class EngineOrchestrator implements IndicatorController, PaneController, 
     /** A setMarket switch is in flight: bar/viewport pokes to the OLD sessions are held
      *  (they must not re-run over the incoming market's bars — re-execution follows the load). */
     private switchingMarket = false;
+    /** The depth (`market.bars`) before scrolling back deepened it — restored when the market
+     *  changes; null ≡ no scroll-back extension on the current market. */
+    private scrollBackDepth: { bars: number | undefined } | null = null;
+    /** A scroll-back extension is loading; further edge hits wait for it. */
+    private scrollingBack = false;
     /** A load is in flight with nothing painted — the state behind the renderer's loading
      *  affordance and the `load:start`/`load:end` event pair (transition-guarded). */
     private loadingUp = false;
@@ -411,7 +422,33 @@ export class EngineOrchestrator implements IndicatorController, PaneController, 
             }
             // An active chart-type data engine streams in newly-visible data as the user scrolls.
             if (this.activeEngineStyle) this.typeEngines.get(this.activeEngineStyle)?.onViewport?.({ from: window.left, to: window.right });
+            this.maybeScrollBack(window.left);
         }, VIEWPORT_DEBOUNCE_MS);
+    }
+
+    /**
+     * The view reached the oldest loaded bars: deepen the history by one extension through
+     * the depth-only path (`extendDepth` — the view stays put). Never during a replay (its
+     * cut owns the history), a load, or a backfill, and never once the source has run out:
+     * a load that brought fewer bars than it asked for found the start of the history.
+     */
+    private maybeScrollBack(left: number): void {
+        const m = this.config.market;
+        const bars = this.rawBars;
+        if (this.scrollingBack || this.historyState !== 'complete' || this.loadingUp) return;
+        if (this.replayQueue || this.replayLoading || this.replayCarrying) return;
+        if (m.data?.length || typeof this.feed.loadRange !== 'function' || this.unavailableGen === this.generation) return;
+        const depth = m.bars ?? DEFAULT_BARS;
+        if (bars.length === 0 || bars.length < depth) return;
+        const edge = bars[Math.min(SCROLL_BACK_EDGE_BARS, bars.length - 1)]!.time;
+        if (left > edge) return;
+        const base = this.scrollBackDepth ?? { bars: m.bars };
+        this.scrollingBack = true;
+        const extending = this.setMarket({ bars: bars.length + SCROLL_BACK_BARS });
+        this.scrollBackDepth = base; // after the call: its synchronous part clears the field
+        void extending.then(() => this.historyComplete()).finally(() => {
+            this.scrollingBack = false;
+        });
     }
 
     private async init(): Promise<void> {
@@ -518,7 +555,7 @@ export class EngineOrchestrator implements IndicatorController, PaneController, 
         // now, the rest as soon as they land (the load's own metadata request, usually ahead
         // of the bars). A symbol switch starts from unknown, so the chosen style comes back.
         this.syncSymbolFacts();
-        const requested = market.bars ?? 500;
+        const requested = market.bars ?? DEFAULT_BARS;
         const initialRange = market.visibleRange;
         // Only a DEEP request is worth splitting, and only when a requested initial window
         // does not pin the frame (a chunked load would paint the wrong range, then jump).
@@ -766,6 +803,14 @@ export class EngineOrchestrator implements IndicatorController, PaneController, 
                 else m.bars = depth.bars;
             }
         }
+        // Depth that scrolling back added belongs to this series only: another market loads
+        // at the depth set before the scroll, unless the caller names one.
+        const scrolled = this.scrollBackDepth;
+        if (identityChanged || next.bars !== undefined) this.scrollBackDepth = null;
+        if (scrolled && identityChanged && next.bars === undefined) {
+            if (scrolled.bars === undefined) delete m.bars;
+            else m.bars = scrolled.bars;
+        }
         // Same market, only deeper/shallower, with bars already on screen: handled by moving
         // the array's oldest edge instead of reloading (see `extendDepth`). An offline `data`
         // series has no source to extend from, and GROWING needs a ranged feed to fetch the
@@ -833,8 +878,8 @@ export class EngineOrchestrator implements IndicatorController, PaneController, 
             // years back never triggers a mega-load (the clamp is the honest fallback
             // there). Deepening only — the user's own depth is never shrunk.
             if (carried) {
-                const needed = Math.min(Math.ceil((Date.now() - carried.left) / this.barIntervalMs()) + 50, 5000);
-                if (needed > (m.bars ?? 500)) m.bars = needed;
+                const needed = Math.min(Math.ceil((Date.now() - carried.left) / this.barIntervalMs()) + 50, CARRY_MAX_BARS);
+                if (needed > (m.bars ?? DEFAULT_BARS)) m.bars = needed;
             }
             if (next.data !== undefined) m.data = next.data;
             else if (next.symbol !== undefined) delete m.data; // offline → provider switch
@@ -882,7 +927,7 @@ export class EngineOrchestrator implements IndicatorController, PaneController, 
             // renderer a fresh short head — a shorter, LATER-starting array — which re-frames
             // the viewport and strands every mounted model's anchor behind the new first bar.
             if (depthOnly) {
-                this.extendDepth(gen, m.bars ?? 500);
+                this.extendDepth(gen, m.bars ?? DEFAULT_BARS);
             } else {
                 // Reload through the shared pipeline. The race lets a superseded caller resolve
                 // promptly (e.g. a parked load on an unresolvable symbol) instead of hanging.
@@ -1254,7 +1299,7 @@ export class EngineOrchestrator implements IndicatorController, PaneController, 
             // supersedes the backfill, and that reload resumes live updates itself.
             const depth = this.replayDepth;
             this.abandonReplayLoad('stopped');
-            void this.setMarket({ bars: depth?.bars ?? 500 });
+            void this.setMarket({ bars: depth?.bars ?? DEFAULT_BARS });
             return;
         }
         this.endReplay('stopped', { restore: true, resume: true });
@@ -1490,7 +1535,7 @@ export class EngineOrchestrator implements IndicatorController, PaneController, 
             else this.config.market.bars = depth.bars;
         }
         if (opts.restore) {
-            const keep = depth ? (depth.bars ?? 500) : Infinity;
+            const keep = depth ? (depth.bars ?? DEFAULT_BARS) : Infinity;
             if (queue.length > 0 || this.rawBars.length > keep) {
                 const full = [...this.rawBars, ...queue];
                 this.setBarSeries(full.length > keep ? full.slice(full.length - keep) : full);

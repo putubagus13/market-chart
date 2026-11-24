@@ -7,7 +7,7 @@
 // layout change — its state then round-trips through the workspace pool, so shrinking
 // 4 → 2 → 4 restores the third and fourth exactly, indicators and drawings included).
 import { Vela } from '../Vela';
-import { normalizeSession, type MarketSession, type NativeBackend, type VelaOptions, type VelaTheme } from '../core/options';
+import { DEFAULT_BARS, normalizeSession, type MarketSession, type NativeBackend, type VelaOptions, type VelaTheme } from '../core/options';
 import type { OHLCV } from '../core/model/ohlcv';
 import type { VisibleRangePreset } from '../core/visible-range';
 import type { VisibleRange } from '../core/ports/IChartRenderer';
@@ -779,7 +779,7 @@ export class ChartCell {
         const symbol = this.state.symbol;
         if (!chart || !symbol) return;
         const now = Date.now();
-        const requestedSpan = Math.max(this.state.bars ?? 1000, this.rangeBars) * timeframeMs(this.timeframe);
+        const requestedSpan = Math.max(this.state.bars ?? DEFAULT_BARS, this.rangeBars) * timeframeMs(this.timeframe);
         const fallbackSpan = Number.isFinite(requestedSpan) ? Math.max(3 * 86_400_000, requestedSpan) : 3 * 86_400_000;
         const range = chart.getVisibleRange() ?? { from: now - fallbackSpan, to: now };
         this.sessionShading.track(chart.data, symbol, { session: this.session, timeframe: this.timeframe, range });
@@ -867,7 +867,7 @@ export class ChartCell {
                     label: TEXT.barsToFetch,
                     id: 'bars',
                     options: ['500', '1000', '2000', '5000', '10000', '20000', '50000', '60000', '80000', '100000'],
-                    get: () => String(this.state.bars ?? 1000),
+                    get: () => String(this.state.bars ?? DEFAULT_BARS),
                     set: (v: string) => {
                         this.state.bars = Number(v);
                         this.deps.onStateDirty();
@@ -1137,7 +1137,7 @@ export class ChartCell {
         // Leaving range mode: drop the chip AND its fetch budget (back to the cell's own bars).
         this.activeRangeId = null;
         this.rangeBars = 0;
-        void this.inner.setMarket({ timeframe, bars: this.state.bars });
+        void this.inner.setMarket({ timeframe, bars: this.state.bars ?? DEFAULT_BARS });
         this.projectMarket(this.symbol, timeframe);
         this.deps.onMarketChanged(this.id);
     }
@@ -1167,7 +1167,7 @@ export class ChartCell {
         this.activeRangeId = null;
         this.rangeBars = 0;
         this.pendingRange = null;
-        void chart.setMarket({ timeframe: to, bars: this.state.bars });
+        void chart.setMarket({ timeframe: to, bars: this.state.bars ?? DEFAULT_BARS });
         this.projectMarket(e.symbol, to);
         this.deps.onMarketChanged(this.id);
         this.deps.toast(textOf(i18n, TEXT.unavailableFallback, { symbol, timeframe: asked, shown: timeframeLabel(to, i18n) }), 'info', 5000);
@@ -1218,12 +1218,12 @@ export class ChartCell {
         }
         this.activeRangeId = preset.id;
         const tfChanged = preset.tf !== shown;
-        const deeper = preset.bars > Math.max(this.state.bars ?? 500, this.rangeBars);
+        const deeper = preset.bars > Math.max(this.state.bars ?? DEFAULT_BARS, this.rangeBars);
         this.rangeBars = preset.bars;
         if (tfChanged || deeper) {
             this.pendingRange = preset;
             void this.inner
-                .setMarket({ timeframe: preset.tf, bars: Math.max(this.state.bars ?? 500, this.rangeBars), visibleRange: preset.preset })
+                .setMarket({ timeframe: preset.tf, bars: Math.max(this.state.bars ?? DEFAULT_BARS, this.rangeBars), visibleRange: preset.preset })
                 .then(() => {
                     if (!this.destroyed && this.pendingRange === preset) {
                         this.inner?.setVisibleRangePreset(preset.preset);

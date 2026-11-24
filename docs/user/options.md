@@ -36,7 +36,7 @@ import { BinanceProvider } from '@luxalgo/vela/providers/binance';
 const chart = new Vela('#chart', {
   symbol: 'BTCUSDT',        // bare = first registered provider that lists it; 'binance:BTCUSDT' pins
   timeframe: '1h',
-  bars: 500,                // how many bars of history to load
+  bars: 5000,               // how many bars of history to load (the default)
   live: true,               // history + a forming candle on each tick
   theme: 'dark',
   logScale: true,           // logarithmic price scale
@@ -387,6 +387,9 @@ of every cell, including cells a later layout change creates.
 - **Animations are on** by default (eased zoom, snappy inertial pan).
 - **The current-price line is on** by default.
 - **The price scale is linear** by default (`logScale: false`).
+- **History is 5,000 bars deep on every timeframe** unless you set `bars`, and it grows as you
+  scroll: when the view reaches the oldest loaded bar, the chart loads 5,000 older bars behind
+  it, until the data source has no more. A replay never extends the history this way.
 
 Instead of `'dark'`/`'light'`, pass a full theme object to control every color and the font — all seven fields are required:
 

@@ -6,6 +6,12 @@ All notable changes to Vela, newest first.
 
 ### Changed
 
+- **Deeper history, and more of it as you scroll back.** A chart now loads 5,000 bars of
+  history when you do not set `bars`, instead of 500, so minute and hour charts open with
+  days or weeks of data rather than hours. Scrolling or zooming out to the oldest loaded
+  bar loads 5,000 more behind it, as often as you keep going, until the data source has
+  nothing older. Switching symbol or timeframe starts again from your chosen depth. The
+  **Bars to fetch** setting now shows the depth that actually loads.
 - **Elliott wave counts start at 0.** The Elliott Impulse Wave tool now places six points
   labelled 0 to 5, and the Elliott Correction Wave tool places four points labelled 0, A,
   B, C, so each count begins where the move starts. Counts saved before this change open

@@ -434,12 +434,12 @@ describe('setMarket — in-place market switch', () => {
         const renderer = new FakeRenderer();
         const chart = make({ symbol: 'AAA', timeframe: '60', volume: false }, { renderer, engines: [], dataFeed: feed });
         await chart.ready();
-        // The user panned ~900 hourly bars into the past — 500 bars cannot reach it.
-        renderer.visibleRange = { from: Date.now() - 900 * 3_600_000, to: Date.now() - 880 * 3_600_000 };
+        // The user panned ~9000 hourly bars into the past — the default depth cannot reach it.
+        renderer.visibleRange = { from: Date.now() - 9000 * 3_600_000, to: Date.now() - 8980 * 3_600_000 };
         await chart.setMarket({ session: 'extended' });
         const deep = feed.loads[feed.loads.length - 1]!.bars ?? 0;
-        expect(deep).toBeGreaterThanOrEqual(900); // reaches the window (+ margin)
-        expect(deep).toBeLessThanOrEqual(5000); // …but never a mega-load
+        expect(deep).toBeGreaterThanOrEqual(9000); // reaches the window (+ margin)
+        expect(deep).toBeLessThanOrEqual(20_000); // …but never a mega-load
 
         // A NEARBY window needs no deepening — the default depth already covers it.
         renderer.visibleRange = { from: Date.now() - 100 * 3_600_000, to: Date.now() - 90 * 3_600_000 };

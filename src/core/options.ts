@@ -22,12 +22,17 @@ export type MarketSession = 'regular' | 'extended';
 export const normalizeSession = (v: unknown): MarketSession | undefined => (v === 'regular' || v === 'extended' ? v : undefined);
 
 /** How the chart obtains its candles. */
+/** History depth loaded when no `bars` is set — the same on every timeframe. */
+export const DEFAULT_BARS = 5_000;
+
 export interface MarketConfig {
     /** The market's symbol. A bare ticker (`'BTCUSDT'`) resolves against the registered
      *  providers in DECLARATION order (first one whose index lists it); an
      *  `EXCHANGE:` prefix (`'coinbase:BTC-USD'`, case-insensitive) pins the venue. */
     symbol?: string;
     timeframe?: string;
+    /** Bars of history to load ({@link DEFAULT_BARS} when absent). Scrolling to the oldest
+     *  loaded bar extends it further. */
     bars?: number;
     /** Trading session to show ({@link MarketSession}). Absent = the provider's default
      *  (`regular` on session markets); continuous markets ignore it entirely. */
