@@ -87,6 +87,10 @@ import { compositeLayoutScreenshot, tilesFromCellRects, triggerPngDownload, type
 import { injectChromeStyles } from '../ui/chromeStyles';
 import { css } from '@luxalgo/vela-ui/css';
 import { t } from '@luxalgo/vela-ui/t';
+import { installReplayControls } from '../widget/replay/replay-controls';
+
+// Built-in trading tools: contributions through the public seams, like any plugin's.
+installReplayControls();
 
 /**
  * The workspace options: the widget's chart vocabulary + the shared shell surface + the

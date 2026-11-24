@@ -4,6 +4,13 @@ All notable changes to Vela, newest first.
 
 ## [Unreleased]
 
+### Added
+
+- **Bar replay controls.** A **Bar replay** button in the topbar starts a replay from the
+  bar you click, and a strip above the bottom bar lets you play and pause, move forward one
+  bar, pick the speed from 0.5× to 10×, jump to a date from a calendar, pick another start
+  bar, and leave the replay. It shows the current bar time and the bars left.
+
 ### Changed
 
 - **Deeper history, and more of it as you scroll back.** A chart now loads 5,000 bars of

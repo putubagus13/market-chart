@@ -2467,6 +2467,18 @@ export interface VelaCoreMessageCatalog {
     'widget.objectTree.unlock': string;
     'widget.objectTree.unlockAll': string;
     'widget.priceScaleDrawer.title': string;
+    'widget.replay.action': string;
+    'widget.replay.cancel': string;
+    'widget.replay.exit': string;
+    'widget.replay.goToDate': string;
+    'widget.replay.noBarAfter': string;
+    'widget.replay.pause': string;
+    'widget.replay.pickHint': string;
+    'widget.replay.play': string;
+    'widget.replay.selectBar': string;
+    'widget.replay.speed': string;
+    'widget.replay.status': string;
+    'widget.replay.step': string;
     'widget.shortcuts.deleteDrawing': string;
     'widget.shortcuts.deleteDrawingKeys': string;
     'widget.shortcuts.measure': string;
