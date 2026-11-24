@@ -337,6 +337,7 @@ Don't change the style again from inside the listener.
 
 ## Bar replay across the grid
 
+The topbar's **Bar replay** button and the replay strip drive this from the UI (see [Trading tools](./trading-tools.md)).
 `ws.replay` rewinds **every cell at once** and replays them on one clock. It takes the same
 verbs as a chart's [`chart.replay`](./api-reference.md#chartreplay--the-bar-replay-control-surface):
 `start`, `step`, `stepUpdate`, `play`, `pause`, `stop`, `state`, `bounds`, plus `on` for the
