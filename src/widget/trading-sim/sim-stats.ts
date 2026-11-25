@@ -1,5 +1,5 @@
 // Statistics over the simulator's closed trades. Pure functions.
-import { plannedRR, resultPips, resultR, type SimTrade, type TradeOutcome } from './sim-engine';
+import { plannedRR, resultPips, resultR, riskOf, type SimTrade, type TradeOutcome } from './sim-engine';
 
 /** Reward:risk ratios the recommendation weighs. */
 export const RR_CANDIDATES = [1, 1.5, 2, 2.5, 3, 4, 5] as const;
@@ -45,7 +45,7 @@ export interface SimStats {
 
 /** How far a trade went in its favor, in risks. */
 function mfeR(t: SimTrade): number {
-    const risk = Math.abs(t.entry - t.sl);
+    const risk = riskOf(t);
     return risk > 0 ? t.mfe / risk : 0;
 }
 

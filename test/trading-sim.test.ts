@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { SimulationEngine, plannedRR, resultPips, resultR, validLevels, type SimTrade, type OpenOrder } from '../src/widget/trading-sim/sim-engine';
+import { SimulationEngine, plannedRR, resultPips, resultR, validLevels, riskOf, initialStop, trailedStop, pendingKind, type SimTrade, type OpenOrder } from '../src/widget/trading-sim/sim-engine';
 import { computeStats, MIN_SAMPLE } from '../src/widget/trading-sim/sim-stats';
 import { PipSizes } from '../src/widget/trading-sim/pip-sizes';
+import { parsePositiveNumber } from '../src/widget/trading-sim/parse-number';
 import { buildStatsModel, PER_TRADE_BARS } from '../src/widget/trading-sim/sim-stats-model';
 
 const long = (over: Partial<OpenOrder> = {}): OpenOrder => ({ symbol: 'BTC', timeframe: '60', side: 'long', entry: 100, sl: 90, tp: 120, openTime: 1_000, pip: 1, ...over });
@@ -234,5 +235,249 @@ describe('statistics model', () => {
         expect(m.empty).toBe(true);
         expect(m.equity).toEqual([{ x: 0, y: 0 }]);
         expect(m.bars).toEqual([]);
+    });
+});
+
+describe('stop adjustment', () => {
+    it('rejects a stop that loosens or reaches the last close', () => {
+        const e = new SimulationEngine();
+        let emits = 0;
+        e.subscribe(() => (emits += 1));
+        const t = e.place(long())!;
+        emits = 0;
+        expect(e.moveStop(t.id, 85, 108)).toBe('loosens');
+        expect(e.moveStop(t.id, 90, 108)).toBe('unchanged');
+        expect(e.moveStop(t.id, 108, 108)).toBe('past-price');
+        expect(e.moveStop(t.id, 109, 108)).toBe('past-price');
+        expect(e.moveStop('nope', 95, 108)).toBe('unknown');
+        expect(e.openTrades[0]!.sl).toBe(90);
+        expect(emits).toBe(0);
+        const s = e.place(long({ side: 'short', sl: 110, tp: 80 }))!;
+        expect(e.moveStop(s.id, 112, 92)).toBe('loosens');
+        expect(e.moveStop(s.id, 92, 92)).toBe('past-price');
+        expect(e.moveStop(s.id, 105, 92)).toBe('moved');
+    });
+
+    it('a moved stop is the one that closes the trade', () => {
+        const e = new SimulationEngine();
+        const t = e.place(long())!;
+        expect(e.moveStop(t.id, 100, 108)).toBe('moved');
+        const [c] = e.onBar('BTC', '60', bar(2_000, 99, 105));
+        expect(c).toEqual(expect.objectContaining({ exit: 100, outcome: 'sl', initialSl: 90 }));
+        expect(resultR(c!)).toBe(0);
+    });
+
+    it('a stop moved into profit gives positive R on the original risk', () => {
+        const e = new SimulationEngine();
+        const t = e.place(long())!;
+        e.moveStop(t.id, 105, 108);
+        const [c] = e.onBar('BTC', '60', bar(2_000, 104, 107));
+        expect(resultR(c!)).toBe(0.5);
+        expect(c!.mae).toBe(0);
+        expect(riskOf(c!)).toBe(10);
+        expect(initialStop(c!)).toBe(90);
+    });
+
+    it('trailing follows the best price and never loosens', () => {
+        const e = new SimulationEngine();
+        const t = e.place(long({ tp: 130, trailPct: 10 }))!;
+        e.onBar('BTC', '60', { time: 2_000, low: 100, high: 120, close: 118 });
+        expect(e.openTrades[0]!.sl).toBe(108);
+        e.onBar('BTC', '60', { time: 3_000, low: 112, high: 115, close: 114 });
+        expect(e.openTrades[0]!.sl).toBe(108);
+        const [c] = e.onBar('BTC', '60', { time: 4_000, low: 107.9, high: 113, close: 110 });
+        expect(c).toEqual(expect.objectContaining({ id: t.id, exit: 108, outcome: 'sl' }));
+    });
+
+    it('trailing does not use the bar under test', () => {
+        const e = new SimulationEngine();
+        e.place(long({ trailPct: 10 }));
+        const [c] = e.onBar('BTC', '60', { time: 2_000, low: 89, high: 130, close: 125 });
+        expect(c).toEqual(expect.objectContaining({ exit: 90, outcome: 'sl' }));
+    });
+
+    it('trailing never moves the stop to or past the close', () => {
+        const e = new SimulationEngine();
+        e.place(long({ trailPct: 1 }));
+        e.onBar('BTC', '60', { time: 2_000, low: 100, high: 110, close: 108 });
+        expect(e.openTrades[0]!.sl).toBe(90);
+        expect(trailedStop({ side: 'long', sl: 90, peak: 110, trailPct: 1 }, 108)).toBe(90);
+        expect(trailedStop({ side: 'long', sl: 90, peak: 110, trailPct: 1 }, 109)).toBeCloseTo(108.9);
+        expect(trailedStop({ side: 'long', sl: 90 }, 109)).toBe(90);
+    });
+
+    it('a short trails downward', () => {
+        const e = new SimulationEngine();
+        e.place(long({ side: 'short', sl: 110, tp: 70, trailPct: 10 }));
+        e.onBar('BTC', '60', { time: 2_000, low: 80, high: 101, close: 82 });
+        expect(e.openTrades[0]!.sl).toBe(88);
+    });
+
+    it('setTrail validates', () => {
+        const e = new SimulationEngine();
+        const t = e.place(long({ trailPct: 2 }))!;
+        for (const bad of [0, 100, NaN, -1]) expect(e.setTrail(t.id, bad)).toBe(false);
+        expect(e.openTrades[0]!.trailPct).toBe(2);
+        expect(e.setTrail('nope', 1)).toBe(false);
+        expect(e.setTrail(t.id, 1.5)).toBe(true);
+        expect(e.openTrades[0]!.trailPct).toBe(1.5);
+        expect(e.setTrail(t.id, null)).toBe(true);
+        expect(e.openTrades[0]!.trailPct).toBeUndefined();
+    });
+
+    it('restoring old and new history', () => {
+        const old = { ...closed(1, 'tp') };
+        const withStops = { ...closed(2, 'sl'), initialSl: 90, peak: 120, trailPct: 2 };
+        const e = new SimulationEngine();
+        e.restoreHistory({ trades: [old, withStops, { ...closed(3, 'sl'), initialSl: 'x' }, { ...closed(4, 'sl'), trailPct: -1 }] });
+        expect(e.history.map((t) => t.id)).toEqual([old.id, withStops.id]);
+        expect(e.history[0]!.initialSl).toBeUndefined();
+        const copy = new SimulationEngine();
+        copy.restoreHistory(JSON.parse(JSON.stringify(e.toJSON())));
+        expect(copy.history[1]).toEqual(withStops);
+    });
+});
+
+describe('statistics with a moved stop', () => {
+    it('risk uses the original stop', () => {
+        const t = { ...closed(1, 'sl', { mfe: 15 }), sl: 100, initialSl: 90, exit: 100 };
+        expect(resultR(t)).toBe(0);
+        const stats = computeStats([t]);
+        expect(stats.breakeven).toBe(1);
+        expect(stats.rr.find((r) => r.rr === 1.5)!.probability).toBe(1);
+    });
+});
+
+describe('pending orders', () => {
+    const buyLimit = (over: Partial<OpenOrder> = {}): OpenOrder => long({ entry: 95, sl: 90, tp: 120, ...over });
+
+    it('refuses levels on the wrong side', () => {
+        const e = new SimulationEngine();
+        expect(e.placePending(long({ sl: 110 }), 100)).toBeNull();
+        expect(e.pendingOrders).toHaveLength(0);
+    });
+
+    it('a buy limit fills when a later bar reaches its price', () => {
+        const e = new SimulationEngine();
+        const fills: SimTrade[] = [];
+        e.onFill((t) => fills.push(t));
+        const order = e.placePending(buyLimit(), 100)!;
+        e.onBar('BTC', '60', bar(2_000, 96, 99));
+        expect(fills).toHaveLength(0);
+        expect(e.pendingOrders).toHaveLength(1);
+        e.onBar('BTC', '60', bar(3_000, 94, 97));
+        expect(fills).toHaveLength(1);
+        expect(fills[0]).toEqual(expect.objectContaining({ id: order.id, entry: 95, openTime: 3_000, peak: 95, initialSl: 90 }));
+        expect(e.pendingOrders).toHaveLength(0);
+        expect(e.openTrades.map((t) => t.id)).toEqual([order.id]);
+    });
+
+    it('a stop-entry fills when price rises to it', () => {
+        const e = new SimulationEngine();
+        e.placePending(long({ entry: 105, sl: 95, tp: 130 }), 100);
+        e.onBar('BTC', '60', bar(2_000, 100, 106));
+        expect(e.openTrades).toHaveLength(1);
+        expect(e.openTrades[0]!.entry).toBe(105);
+    });
+
+    it('ignores its own placement bar and other markets', () => {
+        const e = new SimulationEngine();
+        e.placePending(buyLimit(), 100);
+        e.onBar('BTC', '60', bar(1_000, 50, 200));
+        e.onBar('ETH', '60', bar(2_000, 50, 200));
+        e.onBar('BTC', '15', bar(2_000, 50, 200));
+        expect(e.pendingOrders).toHaveLength(1);
+        expect(e.openTrades).toHaveLength(0);
+    });
+
+    it('the fill bar closes at the stop only', () => {
+        const e = new SimulationEngine();
+        e.placePending(buyLimit({ tp: 100 }), 100);
+        const closed1 = e.onBar('BTC', '60', bar(2_000, 89, 101));
+        expect(closed1).toHaveLength(1);
+        expect(closed1[0]).toEqual(expect.objectContaining({ exit: 90, outcome: 'sl' }));
+        expect(e.openTrades).toHaveLength(0);
+
+        const f = new SimulationEngine();
+        f.placePending(buyLimit({ tp: 100 }), 100);
+        expect(f.onBar('BTC', '60', bar(2_000, 94, 101))).toEqual([]);
+        expect(f.openTrades).toHaveLength(1);
+        expect(f.openTrades[0]!.mfe).toBe(0);
+        // the next bar behaves like any open trade
+        const [c] = f.onBar('BTC', '60', bar(3_000, 96, 101));
+        expect(c).toEqual(expect.objectContaining({ exit: 100, outcome: 'tp' }));
+    });
+
+    it('pendingKind names limit and stop orders', () => {
+        expect(pendingKind('long', 95, 100)).toBe('limit');
+        expect(pendingKind('long', 105, 100)).toBe('stop');
+        expect(pendingKind('short', 105, 100)).toBe('limit');
+        expect(pendingKind('short', 95, 100)).toBe('stop');
+    });
+
+    it('cancelling', () => {
+        const e = new SimulationEngine();
+        const a = e.placePending(buyLimit(), 100)!;
+        const b = e.placePending(buyLimit({ entry: 94 }), 100)!;
+        expect(e.cancelPending(a.id)).toBe(true);
+        expect(e.cancelPending(a.id)).toBe(false);
+        expect(e.cancelAllPending().map((o) => o.id)).toEqual([b.id]);
+        let emits = 0;
+        e.subscribe(() => (emits += 1));
+        expect(e.cancelAllPending()).toEqual([]);
+        expect(emits).toBe(0);
+    });
+
+    it('an order fills when a bar gaps past its price, at its price', () => {
+        const fills: SimTrade[] = [];
+        const watch = (e: SimulationEngine): void => void e.onFill((t) => fills.push(t));
+        // buy limit at 95 (price above): a bar that trades entirely below it
+        const a = new SimulationEngine();
+        watch(a);
+        a.placePending(buyLimit(), 100);
+        a.onBar('BTC', '60', bar(2_000, 92, 94));
+        // buy stop at 105 (price below): a bar that trades entirely above it
+        const b = new SimulationEngine();
+        watch(b);
+        b.placePending(long({ entry: 105, sl: 95, tp: 130 }), 100);
+        b.onBar('BTC', '60', bar(2_000, 107, 110));
+        // sell limit at 105 (price below): a bar entirely above it
+        const c = new SimulationEngine();
+        watch(c);
+        c.placePending(long({ side: 'short', entry: 105, sl: 110, tp: 80 }), 100);
+        c.onBar('BTC', '60', bar(2_000, 106, 108));
+        // sell stop at 95 (price above): a bar entirely below it
+        const d = new SimulationEngine();
+        watch(d);
+        d.placePending(long({ side: 'short', entry: 95, sl: 105, tp: 80 }), 100);
+        d.onBar('BTC', '60', bar(2_000, 90, 92));
+        expect(fills.map((t) => t.entry)).toEqual([95, 105, 105, 95]);
+        expect([a, b, c, d].map((e) => e.openTrades.length)).toEqual([1, 1, 1, 1]);
+    });
+
+    it('an order does not fill while the bar stays on the side it was placed from', () => {
+        const e = new SimulationEngine();
+        e.placePending(buyLimit(), 100); // buy limit at 95
+        e.placePending(long({ entry: 105, sl: 95, tp: 130 }), 100); // buy stop at 105
+        e.onBar('BTC', '60', bar(2_000, 96, 104));
+        expect(e.pendingOrders).toHaveLength(2);
+        expect(e.openTrades).toHaveLength(0);
+    });
+
+    it('its kind is fixed when it is placed', () => {
+        const e = new SimulationEngine();
+        const limit = e.placePending(buyLimit(), 100)!;
+        const stop = e.placePending(long({ entry: 105, sl: 95, tp: 130 }), 100)!;
+        expect([limit.kind, stop.kind]).toEqual(['limit', 'stop']);
+        e.onBar('BTC', '60', bar(2_000, 96, 99)); // price moves, neither fills
+        expect(e.pendingOrders.map((o) => o.kind)).toEqual(['limit', 'stop']);
+    });
+});
+
+describe('parsePositiveNumber', () => {
+    it('parses plain positive decimals only', () => {
+        expect(parsePositiveNumber('12.5')).toBe(12.5);
+        expect(parsePositiveNumber(' 0.01 ')).toBe(0.01);
+        for (const bad of ['abc', '-', '1,5', '0', '', '1e3']) expect(parsePositiveNumber(bad), bad).toBeNull();
     });
 });

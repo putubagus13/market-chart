@@ -21,6 +21,12 @@ export interface SimTrade {
     mfe: number;
     /** Furthest the price moved against the trade, in price units (≥ 0). */
     mae: number;
+    /** The stop the trade was placed with; `sl` moves when the user tightens it or a trail follows the price. */
+    initialSl?: number;
+    /** Percent of price the stop trails the best price by; absent when trailing is off. */
+    trailPct?: number;
+    /** Best price since the fill: the highest high for a long, the lowest low for a short. */
+    peak?: number;
     closeTime?: number;
     exit?: number;
     outcome?: TradeOutcome;
@@ -42,19 +48,58 @@ export interface OpenOrder {
     tp: number;
     openTime: number;
     pip: number;
+    trailPct?: number;
+}
+
+/** The stop a trade was placed with (saved trades from before stops moved have only `sl`). */
+export function initialStop(t: Pick<SimTrade, 'sl' | 'initialSl'>): number {
+    return t.initialSl ?? t.sl;
+}
+
+/** The price distance risked at the start: results in R are measured against it. */
+export function riskOf(t: Pick<SimTrade, 'entry' | 'sl' | 'initialSl'>): number {
+    return Math.abs(t.entry - initialStop(t));
+}
+
+/** How a request to move a stop ended. Only `'moved'` changed the trade. */
+export type StopMove = 'moved' | 'unchanged' | 'loosens' | 'past-price' | 'unknown';
+
+/**
+ * The stop after trailing: `peak` less (more, for a short) `trailPct` percent. It applies only
+ * when it is tighter than `sl` and still strictly beyond `close`, so a trail never loosens a
+ * stop and never moves it onto the price.
+ */
+export function trailedStop(t: Pick<SimTrade, 'side' | 'sl' | 'peak' | 'trailPct'>, close: number): number {
+    if (t.trailPct === undefined || t.peak === undefined) return t.sl;
+    const gap = (t.peak * t.trailPct) / 100;
+    if (t.side === 'long') {
+        const candidate = t.peak - gap;
+        return candidate > t.sl && candidate < close ? candidate : t.sl;
+    }
+    const candidate = t.peak + gap;
+    return candidate < t.sl && candidate > close ? candidate : t.sl;
+}
+
+/** An order waiting for its price (its `openTime` is the bar it was placed on). */
+export type PendingKind = 'limit' | 'stop';
+export type PendingOrder = OpenOrder & { id: string; kind: PendingKind };
+
+/** A buy below the price (or a sell above it) is a limit order; the other side waits for a breakout: a stop order. */
+export function pendingKind(side: TradeSide, entry: number, price: number): PendingKind {
+    return (side === 'long' ? entry < price : entry > price) ? 'limit' : 'stop';
 }
 
 const dir = (side: TradeSide): 1 | -1 => (side === 'long' ? 1 : -1);
 
 /** Reward over risk the levels were planned with. */
-export function plannedRR(t: Pick<SimTrade, 'entry' | 'sl' | 'tp'>): number {
-    const risk = Math.abs(t.entry - t.sl);
+export function plannedRR(t: Pick<SimTrade, 'entry' | 'sl' | 'initialSl' | 'tp'>): number {
+    const risk = riskOf(t);
     return risk > 0 ? Math.abs(t.tp - t.entry) / risk : 0;
 }
 
 /** Result of a closed trade in multiples of its risk (+2 = won twice the risk). */
 export function resultR(t: SimTrade): number {
-    const risk = Math.abs(t.entry - t.sl);
+    const risk = riskOf(t);
     if (t.exit === undefined || risk <= 0) return 0;
     return ((t.exit - t.entry) * dir(t.side)) / risk;
 }
@@ -72,14 +117,32 @@ export function validLevels(o: Pick<OpenOrder, 'side' | 'entry' | 'sl' | 'tp'>):
     return (o.tp - o.entry) * d > 0 && (o.entry - o.sl) * d > 0;
 }
 
+/** Whether the bar reaches the trade's stop. */
+function stopReached(t: SimTrade, bar: BarLike): boolean {
+    return t.side === 'long' ? bar.low <= t.sl : bar.high >= t.sl;
+}
+
+/** The trade closed at its stop by `bar`. The bar's favorable extreme may have come after the stop, so it
+ *  does not count; a stop tightened into profit risks nothing against the entry. */
+function stopped(t: SimTrade, bar: BarLike): SimTrade {
+    return { ...t, mae: Math.max(t.mae, Math.max(0, (t.entry - t.sl) * dir(t.side))), closeTime: bar.time, exit: t.sl, outcome: 'sl' };
+}
+
 export class SimulationEngine {
     private open: SimTrade[] = [];
+    private pending: PendingOrder[] = [];
     private closed: SimTrade[] = [];
+    private readonly fillListeners = new Set<(trade: SimTrade) => void>();
     private seq = 0;
     private readonly listeners = new Set<() => void>();
 
     get openTrades(): readonly SimTrade[] {
         return this.open;
+    }
+
+    /** Orders waiting for their price, oldest first. Not saved with the document. */
+    get pendingOrders(): readonly PendingOrder[] {
+        return this.pending;
     }
 
     /** Closed trades, oldest first. */
@@ -91,31 +154,52 @@ export class SimulationEngine {
     place(order: OpenOrder): SimTrade | null {
         if (!validLevels(order)) return null;
         this.seq += 1;
-        const trade: SimTrade = { ...order, id: `t${Date.now().toString(36)}-${this.seq}`, mfe: 0, mae: 0 };
+        const { trailPct, ...levels } = order;
+        const trade: SimTrade = { ...levels, id: `t${Date.now().toString(36)}-${this.seq}`, mfe: 0, mae: 0, initialSl: order.sl, peak: order.entry, ...(trailPct !== undefined ? { trailPct } : {}) };
         this.open = [...this.open, trade];
         this.emit();
         return trade;
     }
 
     /**
-     * Run one revealed bar of `symbol`/`timeframe` through the open trades. A bar that reaches
-     * both levels closes at the stop: a bar does not say which came first, and assuming the
-     * worse one keeps the statistics honest. Returns the trades it closed.
+     * Run one revealed bar of `symbol`/`timeframe` through the pending orders, then the open
+     * trades. A bar that reaches both levels closes at the stop: a bar does not say which came
+     * first, and assuming the worse one keeps the statistics honest. Returns the trades it closed.
      */
     onBar(symbol: string, timeframe: string, bar: BarLike): SimTrade[] {
         const done: SimTrade[] = [];
         let touched = false;
+        // A pending order fills at its price when a later bar reaches it. The bar that fills it can
+        // close it only at its stop: it does not say whether the fill or the target came first.
+        const filled: SimTrade[] = [];
+        const waiting = this.pending.filter((p) => {
+            if (p.symbol !== symbol || p.timeframe !== timeframe || bar.time <= p.openTime) return true;
+            // The order waits on the far side of its price (a buy limit and a sell stop wait for a fall, a
+            // buy stop and a sell limit for a rise) and fills when a bar reaches it, or gaps past it.
+            const waitsForFall = (p.side === 'long') === (p.kind === 'limit');
+            if (waitsForFall ? bar.low > p.entry : bar.high < p.entry) return true;
+            const { trailPct, kind: _kind, ...levels } = p;
+            filled.push({ ...levels, openTime: bar.time, mfe: 0, mae: 0, initialSl: p.sl, peak: p.entry, ...(trailPct !== undefined ? { trailPct } : {}) });
+            return false;
+        });
+        if (filled.length) {
+            touched = true;
+            this.pending = waiting;
+            for (const t of filled) {
+                for (const cb of [...this.fillListeners]) cb(t);
+                if (stopReached(t, bar)) done.push(stopped(t, bar));
+                else this.open = [...this.open, t];
+            }
+        }
         this.open = this.open.map((t) => {
             if (t.symbol !== symbol || t.timeframe !== timeframe || bar.time <= t.openTime) return t;
             touched = true;
             const d = dir(t.side);
             const favorable = Math.max(0, ((t.side === 'long' ? bar.high : bar.low) - t.entry) * d);
             const adverse = Math.max(0, (t.entry - (t.side === 'long' ? bar.low : bar.high)) * d);
-            const slHit = t.side === 'long' ? bar.low <= t.sl : bar.high >= t.sl;
             const tpHit = t.side === 'long' ? bar.high >= t.tp : bar.low <= t.tp;
-            if (slHit) {
-                // The bar's favorable extreme may have come after the stop: it does not count.
-                const c: SimTrade = { ...t, mae: Math.max(t.mae, Math.abs(t.entry - t.sl)), closeTime: bar.time, exit: t.sl, outcome: 'sl' };
+            if (stopReached(t, bar)) {
+                const c = stopped(t, bar);
                 done.push(c);
                 return c;
             }
@@ -124,7 +208,12 @@ export class SimulationEngine {
                 done.push(c);
                 return c;
             }
-            return { ...t, mfe: Math.max(t.mfe, favorable), mae: Math.max(t.mae, adverse) };
+            // The trail reads the extremes of bars already processed, this one included only from
+            // the next bar on: the stop tested above is the one that stood before this bar.
+            const best = t.peak ?? t.entry;
+            const peak = t.side === 'long' ? Math.max(best, bar.high) : Math.min(best, bar.low);
+            const sl = trailedStop({ ...t, peak }, bar.close);
+            return { ...t, peak, sl, mfe: Math.max(t.mfe, favorable), mae: Math.max(t.mae, adverse) };
         });
         if (done.length) {
             const ids = new Set(done.map((t) => t.id));
@@ -133,6 +222,73 @@ export class SimulationEngine {
         }
         if (touched) this.emit();
         return done;
+    }
+
+    /**
+     * Wait for a price: open a trade when a later bar reaches `order.entry`. `reference` is the price
+     * the order is placed against (the last close): it fixes whether the order is a limit or a stop.
+     * Null when the levels are on the wrong side.
+     */
+    placePending(order: OpenOrder, reference: number): PendingOrder | null {
+        if (!validLevels(order)) return null;
+        this.seq += 1;
+        const pending: PendingOrder = { ...order, id: `t${Date.now().toString(36)}-${this.seq}`, kind: pendingKind(order.side, order.entry, reference) };
+        this.pending = [...this.pending, pending];
+        this.emit();
+        return pending;
+    }
+
+    cancelPending(id: string): boolean {
+        const next = this.pending.filter((p) => p.id !== id);
+        if (next.length === this.pending.length) return false;
+        this.pending = next;
+        this.emit();
+        return true;
+    }
+
+    /** Drop every pending order (the replay they waited in ended or moved). Returns the dropped ones. */
+    cancelAllPending(): PendingOrder[] {
+        const dropped = this.pending;
+        if (dropped.length === 0) return [];
+        this.pending = [];
+        this.emit();
+        return dropped;
+    }
+
+    /** Called with each pending order as it fills, before `onBar` returns. */
+    onFill(cb: (trade: SimTrade) => void): () => void {
+        this.fillListeners.add(cb);
+        return () => this.fillListeners.delete(cb);
+    }
+
+    /**
+     * Move an open trade's stop. It may only tighten (closer to the price) and must stay beyond
+     * `lastClose`, or it would close the trade at once.
+     */
+    moveStop(id: string, sl: number, lastClose: number): StopMove {
+        const t = this.open.find((o) => o.id === id);
+        if (!t || !Number.isFinite(sl)) return 'unknown';
+        if (sl === t.sl) return 'unchanged';
+        const long = t.side === 'long';
+        if (long ? sl < t.sl : sl > t.sl) return 'loosens';
+        if (long ? sl >= lastClose : sl <= lastClose) return 'past-price';
+        this.open = this.open.map((o) => (o.id === id ? { ...o, sl } : o));
+        this.emit();
+        return 'moved';
+    }
+
+    /** Turn trailing on at `pct` percent of price (above 0, below 100), or off with null. */
+    setTrail(id: string, pct: number | null): boolean {
+        const t = this.open.find((o) => o.id === id);
+        if (!t) return false;
+        if (pct !== null && !(Number.isFinite(pct) && pct > 0 && pct < 100)) return false;
+        this.open = this.open.map((o) => {
+            if (o.id !== id) return o;
+            const { trailPct: _drop, ...rest } = o;
+            return pct === null ? rest : { ...rest, trailPct: pct };
+        });
+        this.emit();
+        return true;
     }
 
     /** Close an open trade at `price` (the user's market exit). */
@@ -201,6 +357,9 @@ function isClosedTrade(v: unknown): v is SimTrade {
         (t.side === 'long' || t.side === 'short') &&
         num(t.entry) && num(t.sl) && num(t.tp) && num(t.openTime) && num(t.pip) && num(t.mfe) && num(t.mae) &&
         num(t.closeTime) && num(t.exit) &&
+        (t.initialSl === undefined || num(t.initialSl)) &&
+        (t.peak === undefined || num(t.peak)) &&
+        (t.trailPct === undefined || (num(t.trailPct) && t.trailPct > 0)) &&
         (t.outcome === 'tp' || t.outcome === 'sl' || t.outcome === 'manual')
     );
 }
