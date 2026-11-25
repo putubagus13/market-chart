@@ -106,8 +106,9 @@ orders: they are not recorded.
 
 Closed trades go to the **History** tab, newest first, each with its side, entry and exit, its
 result in R (multiples of the risk) and in pips, and how it closed. Remove one trade with its
-trash button, or every trade with **Clear history** (click twice to confirm). The history is
-saved with the rest of the workspace when you use `persist`.
+trash button, or every trade with **Clear history** (click twice to confirm). The trades are
+saved with the rest of the workspace when you use `persist`. The candles and screenshots of
+each trade are kept in your browser (see [Trade journal and dataset](#trade-journal-and-dataset)).
 
 The **Stats** tab shows your results as figures and charts. The **Statistics for** menu at the
 top scopes everything below it to the chart's symbol or to all symbols. From top to bottom:
@@ -140,3 +141,56 @@ BTCUSDT), which makes pip counts large on such symbols. With **This symbol** sel
 **Pip size** card at the bottom of the Stats tab to the size you count in, for example 1 to
 count BTCUSDT in whole dollars. The setting applies to that symbol's past and future trades,
 and it is saved with the workspace. Clear the field to go back to the tick size.
+
+### Trade journal and dataset
+
+Each trade keeps what you need to study it later. Everything stays in your browser (its
+IndexedDB storage); nothing is sent anywhere.
+
+- **Two screenshots.** One is taken when you place the order, with the entry, stop, and target
+  drawn on the chart; the other when the trade closes. Both show on the trade's card in History
+  as thumbnails; click one to see both larger. Turn **Save screenshots** off to keep only the
+  candles. Trades closed before this existed have no screenshots.
+- **Candles.** Each trade saves the 200 bars up to the bar you placed the order on (that bar
+  included) and every bar the replay revealed after it until the trade ended. No bar after the
+  placement bar is in the "before" part, even when more history is loaded.
+- **Tags and a note.** Type tags (separated by commas, for example `breakout, pullback`) and a
+  short note in the Order tab before you place, or edit them later on the trade's card. Tags
+  stay for your next order; the note clears.
+- **Orders that did not fill.** A limit order you cancel, or one the replay ends before its
+  price comes, is listed under **Not filled** in History with its candles. These orders never
+  count in the statistics.
+
+**Export backup** writes one file, `vela-trades-<date>.json`, with the trades, the orders that
+did not fill, their candles, the pip sizes, and (when **Include screenshots in backup** is on)
+their screenshots. **Import** reads such a file back: it adds what you do not have and never
+overwrites a trade with the same id, and it says how many it added, how many were already
+there, and how many entries it could not use. A file in another format, or made by a newer
+version, is refused without changing anything.
+
+**Export dataset** writes `vela-dataset-<date>.jsonl` for analysis or machine learning outside
+Vela: one JSON object per line, one line per closed trade and per order that did not fill. Read
+it in Python with `pandas.read_json(path, lines=True)`.
+
+| Field | Meaning |
+| --- | --- |
+| `schema` | Version of this format (1). Check it before reading a file. |
+| `id`, `symbol`, `timeframe`, `side` | The trade, its market, and `long` or `short`. |
+| `entry`, `tp`, `pip` | Entry price, take profit, and one pip in price units. |
+| `initial_sl`, `final_sl` | The stop the trade started with, and the stop it ended with. |
+| `trail_pct` | The trailing distance in percent of price, or `null`. |
+| `placed_time`, `open_time`, `close_time` | Times (milliseconds) of the bar you placed the order on, the bar that filled it (the same bar for a market order), and the bar that closed it. For an order that did not fill, `open_time` is `null` and `close_time` is when it ended. |
+| `bars_held` | Bars after the fill, up to and including the close bar; `null` without saved candles. |
+| `planned_rr` | Reward over risk at the start. |
+| `outcome` | `tp`, `sl`, `manual`, or for orders that did not fill `cancelled` or `unfilled`. |
+| `result_r` | The result in multiples of the risk of the original stop; `null` for orders that did not fill. |
+| `mfe_r`, `mae_r` | The furthest the price moved for and against the trade, in the same multiples. |
+| `stop_moved` | Whether the stop changed after the order. |
+| `tags`, `note` | Your labels (`[]` and `null` when empty). |
+| `context` | Candles `[time, open, high, low, close, volume]` up to and including the placement bar. Never holds a later bar. Volume is 0 when the data source gives none. |
+| `trade` | Candles after the placement bar until the trade or order ended. |
+
+A trade saved without candles has empty `context` and `trade`.
+
+Trades you place by hand are few and follow your own habits, so a model trained on them alone
+is unreliable. Use them as labeled examples next to a much larger set of market data.

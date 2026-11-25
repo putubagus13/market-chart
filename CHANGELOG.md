@@ -27,6 +27,11 @@ All notable changes to Vela, newest first.
   stop by dragging it, typing a price, or moving it to break-even, or let a trailing stop
   follow the price by a percentage so a profit does not fall back to break-even. Results in
   R stay measured against the original stop.
+  Each trade now keeps a journal: a screenshot of the chart when you place the order and
+  another when it closes, the candles around it, your tags and a note, and the orders you
+  cancelled or that never filled. Export the history as a backup you can import again, or as
+  a dataset with one line per trade for analysis or machine learning outside Vela. All of it
+  stays in your browser.
 
 ### Changed
 
