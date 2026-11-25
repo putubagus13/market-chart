@@ -2,7 +2,11 @@
 // The simulator panel places trades with the symbol's tick size; a user pip size only changes
 // how results are read, so clearing it brings every trade back to the tick size.
 import { describe, it, expect, afterEach } from 'vitest';
-import { TradingSimView } from '../src/widget/trading-sim/sim-panel';
+import { TradingSimView, evidenceOf, serializeSim, restoreSim } from '../src/widget/trading-sim/sim-panel';
+import { MemoryEvidenceStore, type EvidenceStore } from '../src/widget/trading-sim/evidence-store';
+import { TradeEvidence } from '../src/widget/trading-sim/trade-evidence';
+import { computeStats } from '../src/widget/trading-sim/sim-stats';
+import { buildBackup, buildDataset, parseBackup } from '../src/widget/trading-sim/trade-archive';
 import { SimulationEngine } from '../src/widget/trading-sim/sim-engine';
 import { PipSizes } from '../src/widget/trading-sim/pip-sizes';
 import type { WidgetContext } from '../src/widget/contributions';
@@ -20,7 +24,7 @@ const bars = Array.from({ length: 20 }, (_, i) => ({ time: i * HOUR, open: 100, 
 
 type Anchors = Array<{ time: number; price: number }>;
 
-function makeFakeChart() {
+function makeFakeChart(providerBars: typeof bars = bars) {
     const drawings: Array<{ id: string; anchors: Anchors; locked: boolean }> = [];
     const removed: string[] = [];
     const chartHandlers = new Map<string, Set<(payload: never) => void>>();
@@ -31,7 +35,7 @@ function makeFakeChart() {
         setVisibleRange: () => {},
         data: {
             resolve: () => ({ provider: 'p', ticker: 'BTCUSDT' }),
-            providerInstance: () => ({ getBars: async () => bars }),
+            providerInstance: () => ({ getBars: async () => providerBars }),
             symbolInfo: async () => ({ mintick: 0.01 }),
         },
         drawings: {
@@ -67,20 +71,27 @@ const onFor = (map: Handlers) => (event: string, h: (payload: never) => void) =>
 };
 const emitFor = (map: Handlers) => (event: string, payload?: unknown): void => map.get(event)?.forEach((h) => h(payload as never));
 
-function setup() {
+const SHOT = 'data:image/webp;base64,AAAA';
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+type Download = { filename: string; text: string; mime: string };
+
+function setup(opts: { store?: EvidenceStore; providerBars?: typeof bars; capture?: () => string | null; downloads?: Download[] } = {}) {
     const host = document.createElement('div');
     document.body.append(host);
-    const fake = makeFakeChart();
+    const fake = makeFakeChart(opts.providerBars);
     const replayHandlers: Handlers = new Map();
     const replay = { state: { active: true, cursorTime: bars[19]!.time }, pause: () => {}, on: onFor(replayHandlers) };
     const toasts: Array<[string, string | undefined]> = [];
     const ctx = { host, i18n: createTranslator({ locale: 'en' }), toast: (m: string, kind?: string) => toasts.push([m, kind]), stateChanged: () => {}, replay } as unknown as WidgetContext;
     const engine = new SimulationEngine();
     const pips = new PipSizes();
-    const view = new TradingSimView(ctx, engine, pips);
+    const store = opts.store ?? new MemoryEvidenceStore();
+    const evidence = evidenceOf(ctx, store);
+    const view = new TradingSimView(ctx, engine, pips, evidence, { capture: opts.capture ?? (() => SHOT), paint: async () => {}, download: (filename, text, mime) => void opts.downloads?.push({ filename, text, mime }) });
     host.append(view.el);
     view.bindChart(fake.chart);
-    return { view, engine, pips, drawings: fake.drawings, removed: fake.removed, toasts, host, chart: fake.chart, emitChart: fake.emit, emitReplay: emitFor(replayHandlers) };
+    return { view, engine, pips, evidence, store, ctx, drawings: fake.drawings, removed: fake.removed, toasts, host, chart: fake.chart, emitChart: fake.emit, emitReplay: emitFor(replayHandlers) };
 }
 
 const LAST_CLOSE = bars[19]!.close;
@@ -286,6 +297,7 @@ describe('a running trade', () => {
         emitChart('bar', nextBar(2, 102, 104, 103));
         expect(engine.openTrades).toHaveLength(0);
         expect(engine.history[0]).toEqual(expect.objectContaining({ exit: 102.4, outcome: 'sl' }));
+        await flush(); // the drawing stays until the closing screenshot has been taken
         expect(removed).toContain('d0');
         expect(toasts.some(([m]) => m.includes(`${r}R`))).toBe(true);
     });
@@ -341,5 +353,456 @@ describe('after review: the drawing of a running trade', () => {
         b.emit('drawing:edited', { id: 'd0' });
         expect(a.trade().sl).toBeCloseTo(a.trade().entry);
         expect(sl).not.toBe(a.trade().sl);
+    });
+});
+
+const failingStore = (): EvidenceStore => {
+    const boom = (): Promise<never> => Promise.reject(new Error('quota'));
+    return { putWindow: boom, getWindow: boom, putShot: boom, getShot: boom, removeShot: boom, remove: boom, clear: boom };
+};
+const hitTarget = () => nextBar(1, 100, 110, 108);
+
+describe('the trade journal in the panel', () => {
+    afterEach(() => document.body.replaceChildren());
+
+    async function placeMarket(t: ReturnType<typeof setup>): Promise<string> {
+        await t.view.openDraft('long');
+        t.view.placeDraft();
+        return t.engine.openTrades[0]!.id;
+    }
+
+    it('saves a context that ends at the placement bar, whatever the provider has loaded', async () => {
+        const later = Array.from({ length: 5 }, (_, i) => ({ time: bars[19]!.time + (i + 1) * HOUR, open: 1, high: 1, low: 1, close: 1, volume: 1 }));
+        const t = setup({ providerBars: [...bars, ...later] });
+        const id = await placeMarket(t);
+        t.emitChart('bar', hitTarget());
+        await flush();
+        const w = (await t.store.getWindow(id))!;
+        expect(w.map((c) => c[0])).toEqual([...bars.map((b) => b.time), hitTarget().time]);
+        expect(w.every((c) => c[4] !== 1)).toBe(true);
+    });
+
+    it('adds each revealed bar, the closing bar included, and stops at the close', async () => {
+        const t = setup();
+        const id = await placeMarket(t);
+        t.emitChart('bar', nextBar(1, 100, 102, 101));
+        t.emitChart('bar', nextBar(2, 100, 110, 108));
+        t.emitChart('bar', nextBar(3, 100, 101, 100));
+        await flush();
+        const w = (await t.store.getWindow(id))!;
+        expect(w[w.length - 1]![0]).toBe(nextBar(2, 0, 0, 0).time);
+    });
+
+    it('takes an open shot and a close shot, and the position is still on the chart for the close one', async () => {
+        const seen: number[] = [];
+        let live: unknown[] = [];
+        const t = setup({ capture: () => (seen.push(live.length), SHOT) });
+        live = t.drawings;
+        const id = await placeMarket(t);
+        await flush();
+        t.emitChart('bar', hitTarget());
+        await flush();
+        expect(await t.store.getShot(id, 'open')).toBe(SHOT);
+        expect(await t.store.getShot(id, 'close')).toBe(SHOT);
+        expect(seen).toEqual([1, 1]);
+        expect(t.drawings).toHaveLength(0);
+    });
+
+    it('a manual close takes the close shot too', async () => {
+        const t = setup();
+        const id = await placeMarket(t);
+        t.emitChart('bar', nextBar(1, 100, 102, 101));
+        t.view.closeTrade(id);
+        await flush();
+        expect(await t.store.getShot(id, 'close')).toBe(SHOT);
+        expect(await t.store.getWindow(id)).toBeDefined();
+    });
+
+    it('a cancelled order is logged, keeps its candles, loses its open shot, and leaves the statistics alone', async () => {
+        const t = setup();
+        const before = computeStats(t.engine.history);
+        t.view.setOrderType('limit');
+        await t.view.openDraft('long');
+        t.view.placeDraft();
+        const id = t.engine.pendingOrders[0]!.id;
+        await flush();
+        expect(await t.store.getShot(id, 'open')).toBe(SHOT);
+        t.view.cancelPendingOrder(id);
+        await flush();
+        expect(t.engine.orderLog).toEqual([expect.objectContaining({ id, outcome: 'cancelled', reason: 'user' })]);
+        expect(t.engine.history).toHaveLength(0);
+        expect(computeStats(t.engine.history)).toEqual(before);
+        expect(await t.store.getShot(id, 'open')).toBeUndefined();
+        expect((await t.store.getWindow(id))!.length).toBeGreaterThan(0);
+    });
+
+    it('ending the replay logs waiting orders as not filled and forgets running trades', async () => {
+        const t = setup();
+        const running = await placeMarket(t);
+        t.view.setOrderType('limit');
+        await t.view.openDraft('short');
+        t.view.placeDraft();
+        const waiting = t.engine.pendingOrders[0]!.id;
+        await flush();
+        t.emitReplay('replay:end');
+        await flush();
+        expect(t.engine.orderLog).toEqual([expect.objectContaining({ id: waiting, outcome: 'unfilled', reason: 'replay' })]);
+        expect(t.engine.history).toHaveLength(0);
+        expect(await t.store.getWindow(running)).toBeUndefined();
+        expect(await t.store.getShot(running, 'open')).toBeUndefined();
+        expect(await t.store.getShot(waiting, 'open')).toBeUndefined();
+        expect(await t.store.getWindow(waiting)).toBeDefined();
+    });
+
+    it('removing a trade or clearing the history empties the store', async () => {
+        const t = setup();
+        const first = await placeMarket(t);
+        t.emitChart('bar', hitTarget());
+        await flush();
+        t.engine.removeFromHistory(first);
+        await flush();
+        expect(await t.store.getWindow(first)).toBeUndefined();
+        expect(await t.store.getShot(first, 'close')).toBeUndefined();
+        const second = await placeMarket(t);
+        t.emitChart('bar', nextBar(2, 100, 110, 108));
+        await flush();
+        expect(await t.store.getWindow(second)).toBeDefined();
+        t.engine.clearHistory();
+        await flush();
+        expect(await t.store.getWindow(second)).toBeUndefined();
+    });
+
+    it('a store that fails never blocks placing, closing, cancelling, or removing, and one toast says so', async () => {
+        const t = setup({ store: failingStore() });
+        const id = await placeMarket(t);
+        t.emitChart('bar', hitTarget());
+        await flush();
+        expect(t.engine.history.map((x) => x.id)).toEqual([id]);
+        t.view.setOrderType('limit');
+        await t.view.openDraft('long');
+        t.view.placeDraft();
+        t.view.cancelPendingOrder(t.engine.pendingOrders[0]!.id);
+        t.engine.removeFromHistory(id);
+        await flush();
+        expect(t.engine.orderLog).toHaveLength(1);
+        expect(t.toasts.filter(([m, kind]) => kind === 'error' && m.includes('candles or screenshots'))).toHaveLength(1);
+    });
+
+    it('with screenshots off, the candles are still saved', async () => {
+        const t = setup();
+        t.evidence.screenshots = false;
+        const id = await placeMarket(t);
+        t.emitChart('bar', hitTarget());
+        await flush();
+        expect(await t.store.getShot(id, 'open')).toBeUndefined();
+        expect(await t.store.getShot(id, 'close')).toBeUndefined();
+        expect(await t.store.getWindow(id)).toBeDefined();
+    });
+
+    it('labels typed before placing go onto the trade; tags stay for the next order, the note clears', async () => {
+        const t = setup();
+        await t.view.openDraft('long');
+        const tags = t.host.querySelector<HTMLInputElement>('.vela-sim-form input[aria-label="Tags"]')!;
+        const note = t.host.querySelector<HTMLInputElement>('.vela-sim-form input[aria-label="Note"]')!;
+        tags.value = 'breakout, pullback';
+        note.value = 'why';
+        t.view.placeDraft();
+        expect(t.engine.openTrades[0]).toEqual(expect.objectContaining({ tags: ['breakout', 'pullback'], note: 'why' }));
+        expect(note.value).toBe('');
+        expect(tags.value).toBe('breakout, pullback');
+    });
+
+    it('saves and restores the order log and the screenshot setting with the document', async () => {
+        const t = setup();
+        t.view.setOrderType('limit');
+        await t.view.openDraft('long');
+        t.view.placeDraft();
+        t.view.cancelPendingOrder(t.engine.pendingOrders[0]!.id);
+        t.evidence.screenshots = false;
+        const saved = JSON.parse(JSON.stringify(serializeSim(t.engine, t.pips, t.evidence)));
+        expect(saved.orders).toHaveLength(1);
+        expect(saved.settings).toEqual({ screenshots: false });
+        const engine = new SimulationEngine();
+        const evidence = new TradeEvidence(null, () => {});
+        restoreSim(saved, engine, new PipSizes(), evidence);
+        expect(engine.orderLog).toEqual(t.engine.orderLog);
+        expect(evidence.screenshots).toBe(false);
+        const old = new SimulationEngine();
+        restoreSim({ trades: [] }, old, new PipSizes(), new TradeEvidence(null, () => {}));
+        expect(old.history).toHaveLength(0);
+        expect(serializeSim(new SimulationEngine(), new PipSizes(), new TradeEvidence(null, () => {}))).toBeUndefined();
+    });
+});
+
+describe('the journal pages', () => {
+    afterEach(() => document.body.replaceChildren());
+
+    /** A closed trade with tags, a cancelled limit order, and a pip size: a history worth exporting. */
+    async function journal(t: ReturnType<typeof setup>): Promise<string> {
+        await t.view.openDraft('long');
+        t.view.placeDraft();
+        const id = t.engine.openTrades[0]!.id;
+        t.engine.setLabels(id, { tags: ['breakout'], note: 'plan' });
+        t.emitChart('bar', hitTarget());
+        await flush();
+        t.view.setOrderType('limit');
+        await t.view.openDraft('long');
+        t.view.placeDraft();
+        t.view.cancelPendingOrder(t.engine.pendingOrders[0]!.id);
+        t.view.setOrderType('market');
+        t.pips.set('BTCUSDT', 0.5);
+        await flush();
+        return id;
+    }
+
+    /** Open the History tab through its trigger, as a user does. */
+    const showHistory = async (t: ReturnType<typeof setup>): Promise<void> => {
+        [...t.host.querySelectorAll<HTMLButtonElement>('[role="tablist"] button')].find((b) => b.textContent!.trim().startsWith('History'))!.click();
+        await flush();
+    };
+
+    const field = (host: HTMLElement, card: string, label: 'Tags' | 'Note'): HTMLInputElement => host.querySelector<HTMLInputElement>(`${card} input[aria-label="${label}"]`)!;
+    const change = (input: HTMLInputElement, value: string): void => {
+        input.value = value;
+        input.dispatchEvent(new Event('change'));
+    };
+
+    it('tags and a note can be edited on a running trade, a waiting order, and a closed trade', async () => {
+        const t = setup();
+        await t.view.openDraft('long');
+        t.view.placeDraft();
+        const id = t.engine.openTrades[0]!.id;
+        change(field(t.host, `[data-trade="${id}"]`, 'Tags'), 'a, b');
+        change(field(t.host, `[data-trade="${id}"]`, 'Note'), 'note one');
+        expect(t.engine.openTrades[0]).toEqual(expect.objectContaining({ tags: ['a', 'b'], note: 'note one' }));
+        t.view.setOrderType('limit');
+        await t.view.openDraft('short');
+        t.view.placeDraft();
+        const waiting = t.engine.pendingOrders[0]!.id;
+        change(field(t.host, `[data-pending="${waiting}"]`, 'Tags'), 'limit');
+        expect(t.engine.pendingOrders[0]!.tags).toEqual(['limit']);
+        t.emitChart('bar', hitTarget());
+        await flush();
+        change(field(t.host, `[data-trade="${id}"]`, 'Tags'), 'closed');
+        expect(t.engine.history.find((x) => x.id === id)!.tags).toEqual(['closed']);
+        expect(t.engine.history.find((x) => x.id === id)!.note).toBe('note one');
+    });
+
+    it('lists orders that never filled apart from the trades, and removing one drops its candles', async () => {
+        const t = setup();
+        await journal(t);
+        const record = t.engine.orderLog[0]!;
+        const card = t.host.querySelector(`[data-record="${record.id}"]`)!;
+        expect(card.textContent).toContain('Cancelled');
+        expect(t.host.querySelectorAll('[data-trade]')).toHaveLength(1);
+        card.querySelector<HTMLButtonElement>('button[aria-label="Remove order"]')!.click();
+        await flush();
+        expect(t.engine.orderLog).toHaveLength(0);
+        expect(await t.store.getWindow(record.id)).toBeUndefined();
+    });
+
+    it('shows the two screenshots of a closed trade and opens them larger', async () => {
+        const t = setup();
+        const id = await journal(t);
+        await showHistory(t);
+        const thumbs = [...t.host.querySelectorAll<HTMLImageElement>(`[data-trade="${id}"] .vela-sim-shots img`)];
+        expect(thumbs.map((img) => img.getAttribute('src'))).toEqual([SHOT, SHOT]);
+        const before = t.host.querySelectorAll('img').length;
+        t.host.querySelector<HTMLElement>(`[data-trade="${id}"] .vela-sim-shot`)!.click();
+        await flush();
+        expect(t.host.querySelectorAll('img').length).toBe(before + 2);
+    });
+
+    it('shows no screenshot strip for a trade saved without shots', async () => {
+        const t = setup();
+        t.engine.restoreHistory({ trades: [{ id: 'old', symbol: 'BTCUSDT', timeframe: '60', side: 'long', entry: 100, sl: 95, tp: 110, openTime: 1, pip: 1, mfe: 5, mae: 1, closeTime: 2, exit: 110, outcome: 'tp' }] });
+        await flush();
+        expect(t.host.querySelector('[data-trade="old"]')).not.toBeNull();
+        expect(t.host.querySelector('[data-trade="old"] .vela-sim-shots')).toBeNull();
+    });
+
+    it('exports a backup that holds exactly what the engine, the store, and the pip sizes hold', async () => {
+        const downloads: Download[] = [];
+        const t = setup({ downloads });
+        await journal(t);
+        await t.view.exportBackup();
+        expect(downloads).toHaveLength(1);
+        expect(downloads[0]!.filename).toMatch(/^vela-trades-\d{4}-\d{2}-\d{2}\.json$/);
+        const parsed = parseBackup(downloads[0]!.text);
+        if (!parsed.ok) throw new Error('unreadable');
+        const ids = [...t.engine.history, ...t.engine.orderLog].map((x) => x.id);
+        const data = await t.evidence.read(ids);
+        expect(parsed.backup.trades).toEqual(t.engine.history);
+        expect(parsed.backup.orders).toEqual(t.engine.orderLog);
+        expect(parsed.backup.windows).toEqual(data.windows);
+        expect(parsed.backup.images).toEqual(data.images);
+        expect(parsed.backup.pipSizes).toEqual({ BTCUSDT: 0.5 });
+        expect(Object.keys(parsed.backup.images)).toHaveLength(1);
+    });
+
+    it('leaves the screenshots out of the backup when that switch is off', async () => {
+        const downloads: Download[] = [];
+        const t = setup({ downloads });
+        await journal(t);
+        t.host.querySelector<HTMLInputElement>('input[aria-label="Include screenshots in backup"]')!.click();
+        await t.view.exportBackup();
+        const parsed = parseBackup(downloads[0]!.text);
+        expect(parsed.ok && parsed.backup.images).toEqual({});
+        expect(parsed.ok && Object.keys(parsed.backup.windows).length).toBeGreaterThan(0);
+    });
+
+    it('exports the dataset: one line for the trade and one for the order', async () => {
+        const downloads: Download[] = [];
+        const t = setup({ downloads });
+        const id = await journal(t);
+        await t.view.exportDataset();
+        expect(downloads[0]!.filename).toMatch(/^vela-dataset-\d{4}-\d{2}-\d{2}\.jsonl$/);
+        const rows = downloads[0]!.text.trimEnd().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+        expect(rows.map((r) => r.id)).toEqual([id, t.engine.orderLog[0]!.id]);
+        expect(rows[0]).toEqual(expect.objectContaining({ schema: 1, tags: ['breakout'], note: 'plan', outcome: 'tp' }));
+        expect(rows[1]).toEqual(expect.objectContaining({ outcome: 'cancelled', result_r: null }));
+    });
+
+    it('an exported backup imports into a fresh simulator with every field the same', async () => {
+        const downloads: Download[] = [];
+        const a = setup({ downloads });
+        await journal(a);
+        await a.view.exportBackup();
+        const b = setup();
+        await b.view.importText(downloads[0]!.text);
+        expect(b.engine.history).toEqual(a.engine.history);
+        expect(b.engine.orderLog).toEqual(a.engine.orderLog);
+        const ids = [...a.engine.history, ...a.engine.orderLog].map((x) => x.id);
+        expect(await b.evidence.read(ids)).toEqual(await a.evidence.read(ids));
+        expect(b.pips.toJSON()).toEqual(a.pips.toJSON());
+        await showHistory(b);
+        expect(b.host.querySelectorAll(`[data-trade="${a.engine.history[0]!.id}"] .vela-sim-shots img`)).toHaveLength(2);
+    });
+
+    it('importing the same file twice adds nothing the second time and says so', async () => {
+        const downloads: Download[] = [];
+        const a = setup({ downloads });
+        await journal(a);
+        await a.view.exportBackup();
+        const b = setup();
+        await b.view.importText(downloads[0]!.text);
+        await b.view.importText(downloads[0]!.text);
+        expect(b.engine.history).toHaveLength(1);
+        expect(b.engine.orderLog).toHaveLength(1);
+        expect(b.toasts[b.toasts.length - 2]![0]).toContain('2 added');
+        expect(b.toasts[b.toasts.length - 1]![0]).toContain('2 already present');
+    });
+
+    it('never overwrites a trade it already has, and keeps a pip size already set', async () => {
+        const downloads: Download[] = [];
+        const a = setup({ downloads });
+        const id = await journal(a);
+        await a.view.exportBackup();
+        const b = setup();
+        b.engine.restoreHistory({ trades: [{ ...a.engine.history[0]!, entry: 99, id }] });
+        b.pips.set('BTCUSDT', 2);
+        await b.view.importText(downloads[0]!.text);
+        expect(b.engine.history[0]!.entry).toBe(99);
+        expect(b.pips.get('BTCUSDT')).toBe(2);
+    });
+
+    it('a file it cannot use changes nothing and says why', async () => {
+        const t = setup();
+        await journal(t);
+        const before = JSON.stringify(t.engine.toJSON());
+        const toasts = t.toasts.length;
+        for (const text of ['not json', JSON.stringify({ format: 'x', version: 1 }), JSON.stringify({ format: 'vela.tradingSim', version: 99 })]) await t.view.importText(text);
+        expect(JSON.stringify(t.engine.toJSON())).toBe(before);
+        expect(t.toasts.slice(toasts).map(([, kind]) => kind)).toEqual(['error', 'error', 'error']);
+        expect(t.toasts.slice(toasts).map(([m]) => m)).toEqual(['That file is not valid JSON.', 'That file is not a Vela trade backup.', 'That backup was made by a newer version.']);
+    });
+
+    it('a replay step does not rebuild the cards while a tag field is being typed in', async () => {
+        const t = setup();
+        await t.view.openDraft('long');
+        t.view.placeDraft();
+        const id = t.engine.openTrades[0]!.id;
+        const input = field(t.host, `[data-trade="${id}"]`, 'Tags');
+        input.focus();
+        input.value = 'half typed';
+        t.emitChart('bar', nextBar(1, 100, 102, 101));
+        expect(field(t.host, `[data-trade="${id}"]`, 'Tags')).toBe(input);
+        expect(input.value).toBe('half typed');
+    });
+
+    it('keeps the history cards while a tag field there is being typed in', async () => {
+        const t = setup();
+        const id = await journal(t);
+        const input = field(t.host, `[data-trade="${id}"]`, 'Tags');
+        input.focus();
+        t.emitReplay('replay:step');
+        expect(field(t.host, `[data-trade="${id}"]`, 'Tags')).toBe(input);
+    });
+
+    it('lets the screenshot setting be switched and saved', async () => {
+        const t = setup();
+        await journal(t);
+        const state: string[] = [];
+        (t.ctx as { stateChanged: () => void }).stateChanged = () => void state.push('changed');
+        t.host.querySelector<HTMLInputElement>('input[aria-label="Save screenshots"]')!.click();
+        expect(t.evidence.screenshots).toBe(false);
+        expect(state.length).toBeGreaterThan(0);
+    });
+});
+
+describe('after review', () => {
+    afterEach(() => document.body.replaceChildren());
+    const showHistory = async (t: ReturnType<typeof setup>): Promise<void> => {
+        [...t.host.querySelectorAll<HTMLButtonElement>('[role="tablist"] button')].find((b) => b.textContent!.trim().startsWith('History'))!.click();
+        await flush();
+    };
+
+    it('the placement candle is the bar the replay showed, not the provider\'s finished version of it', async () => {
+        const finished = { ...bars[19]!, high: 150, low: 90, close: 120 };
+        const t = setup({ providerBars: [...bars.slice(0, 19), finished] });
+        const shown = { time: bars[19]!.time, open: 100, high: 101, low: 99.5, close: 100.4, volume: 1 };
+        t.emitChart('bar', shown); // the bar still forming when the user pauses
+        await t.view.openDraft('long');
+        t.view.placeDraft();
+        const id = t.engine.openTrades[0]!.id;
+        expect(t.engine.openTrades[0]!.entry).toBe(shown.close);
+        t.emitChart('bar', nextBar(1, 100, 110, 108));
+        await flush();
+        const w = (await t.store.getWindow(id))!;
+        const placement = w.find((c) => c[0] === shown.time)!;
+        expect([placement[2], placement[3], placement[4]]).toEqual([shown.high, shown.low, shown.close]);
+    });
+
+    it('does not read screenshots for a History tab nobody has opened, and shows them once it opens', async () => {
+        const store = new MemoryEvidenceStore();
+        const reads = { n: 0 };
+        const getShot = store.getShot.bind(store);
+        store.getShot = async (id, kind) => (reads.n++, getShot(id, kind));
+        const t = setup({ store });
+        await t.view.openDraft('long');
+        t.view.placeDraft();
+        const id = t.engine.openTrades[0]!.id;
+        t.emitChart('bar', nextBar(1, 100, 110, 108));
+        await flush();
+        expect(reads.n).toBe(0);
+        await showHistory(t);
+        expect(reads.n).toBeGreaterThan(0);
+        expect(t.host.querySelectorAll(`[data-trade="${id}"] .vela-sim-shots img`)).toHaveLength(2);
+    });
+
+    it('a replay step does not rebuild the History cards, a real change does', async () => {
+        const t = setup();
+        await t.view.openDraft('long');
+        t.view.placeDraft();
+        const id = t.engine.openTrades[0]!.id;
+        t.emitChart('bar', nextBar(1, 100, 110, 108));
+        await flush();
+        await showHistory(t);
+        const card = t.host.querySelector(`[data-trade="${id}"]`)!;
+        t.emitReplay('replay:step');
+        t.emitChart('bar', nextBar(2, 100, 102, 101));
+        expect(t.host.querySelector(`[data-trade="${id}"]`)).toBe(card);
+        t.engine.setLabels(id, { tags: ['x'] });
+        expect(t.host.querySelector(`[data-trade="${id}"]`)).not.toBe(card);
     });
 });

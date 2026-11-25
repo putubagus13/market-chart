@@ -1,5 +1,6 @@
 // The trading simulator's order book: market orders with a stop loss and a take profit,
 // closed by the bars a replay reveals. Pure data — no DOM, no chart.
+import { MAX_NOTE_LENGTH, isTags } from './trade-labels';
 
 export type TradeSide = 'long' | 'short';
 /** How a trade ended: its take profit, its stop loss, or the user. */
@@ -27,9 +28,36 @@ export interface SimTrade {
     trailPct?: number;
     /** Best price since the fill: the highest high for a long, the lowest low for a short. */
     peak?: number;
+    /** Time of the bar the order was placed on; a limit order that fills later has a later `openTime`. */
+    placedAt?: number;
+    /** The user's setup labels and note. */
+    tags?: string[];
+    note?: string;
     closeTime?: number;
     exit?: number;
     outcome?: TradeOutcome;
+}
+
+/** An order that never became a trade: the user cancelled it, or the replay ended before its price came. */
+export type OrderEnd = 'cancelled' | 'unfilled';
+export type OrderEndReason = 'user' | 'replay';
+
+export interface SimOrderRecord {
+    id: string;
+    symbol: string;
+    timeframe: string;
+    side: TradeSide;
+    entry: number;
+    sl: number;
+    tp: number;
+    pip: number;
+    trailPct?: number;
+    placedAt: number;
+    endedAt: number;
+    outcome: OrderEnd;
+    reason: OrderEndReason;
+    tags?: string[];
+    note?: string;
 }
 
 export interface BarLike {
@@ -49,6 +77,8 @@ export interface OpenOrder {
     openTime: number;
     pip: number;
     trailPct?: number;
+    tags?: string[];
+    note?: string;
 }
 
 /** The stop a trade was placed with (saved trades from before stops moved have only `sl`). */
@@ -132,6 +162,8 @@ export class SimulationEngine {
     private open: SimTrade[] = [];
     private pending: PendingOrder[] = [];
     private closed: SimTrade[] = [];
+    private log: SimOrderRecord[] = [];
+    private readonly removeListeners = new Set<(ids: string[]) => void>();
     private readonly fillListeners = new Set<(trade: SimTrade) => void>();
     private seq = 0;
     private readonly listeners = new Set<() => void>();
@@ -150,12 +182,17 @@ export class SimulationEngine {
         return this.closed;
     }
 
+    /** Orders that never became trades, oldest first. Kept apart from `history`: no statistic reads them. */
+    get orderLog(): readonly SimOrderRecord[] {
+        return this.log;
+    }
+
     /** Open a market order. Returns the trade, or null when the levels are on the wrong side. */
     place(order: OpenOrder): SimTrade | null {
         if (!validLevels(order)) return null;
         this.seq += 1;
         const { trailPct, ...levels } = order;
-        const trade: SimTrade = { ...levels, id: `t${Date.now().toString(36)}-${this.seq}`, mfe: 0, mae: 0, initialSl: order.sl, peak: order.entry, ...(trailPct !== undefined ? { trailPct } : {}) };
+        const trade: SimTrade = { ...levels, id: `t${Date.now().toString(36)}-${this.seq}`, mfe: 0, mae: 0, initialSl: order.sl, peak: order.entry, placedAt: order.openTime, ...(trailPct !== undefined ? { trailPct } : {}) };
         this.open = [...this.open, trade];
         this.emit();
         return trade;
@@ -179,7 +216,7 @@ export class SimulationEngine {
             const waitsForFall = (p.side === 'long') === (p.kind === 'limit');
             if (waitsForFall ? bar.low > p.entry : bar.high < p.entry) return true;
             const { trailPct, kind: _kind, ...levels } = p;
-            filled.push({ ...levels, openTime: bar.time, mfe: 0, mae: 0, initialSl: p.sl, peak: p.entry, ...(trailPct !== undefined ? { trailPct } : {}) });
+            filled.push({ ...levels, openTime: bar.time, mfe: 0, mae: 0, initialSl: p.sl, peak: p.entry, placedAt: p.openTime, ...(trailPct !== undefined ? { trailPct } : {}) });
             return false;
         });
         if (filled.length) {
@@ -238,19 +275,22 @@ export class SimulationEngine {
         return pending;
     }
 
-    cancelPending(id: string): boolean {
-        const next = this.pending.filter((p) => p.id !== id);
-        if (next.length === this.pending.length) return false;
-        this.pending = next;
+    /** Cancel a waiting order and log it (`time` is the replay's current bar). */
+    cancelPending(id: string, time: number): boolean {
+        const order = this.pending.find((p) => p.id === id);
+        if (!order) return false;
+        this.pending = this.pending.filter((p) => p.id !== id);
+        this.log = [...this.log, recordOf(order, 'cancelled', 'user', time)];
         this.emit();
         return true;
     }
 
-    /** Drop every pending order (the replay they waited in ended or moved). Returns the dropped ones. */
-    cancelAllPending(): PendingOrder[] {
+    /** Drop every pending order (the replay they waited in ended or moved) and log them. Returns the dropped ones. */
+    cancelAllPending(time: number): PendingOrder[] {
         const dropped = this.pending;
         if (dropped.length === 0) return [];
         this.pending = [];
+        this.log = [...this.log, ...dropped.map((p) => recordOf(p, 'unfilled', 'replay', time))];
         this.emit();
         return dropped;
     }
@@ -315,25 +355,96 @@ export class SimulationEngine {
         const next = this.closed.filter((t) => t.id !== id);
         if (next.length === this.closed.length) return;
         this.closed = next;
+        this.announceRemoved([id]);
         this.emit();
     }
 
-    clearHistory(): void {
-        if (this.closed.length === 0) return;
-        this.closed = [];
+    removeOrderRecord(id: string): void {
+        const next = this.log.filter((r) => r.id !== id);
+        if (next.length === this.log.length) return;
+        this.log = next;
+        this.announceRemoved([id]);
         this.emit();
+    }
+
+    /** Empty the history and the order log. */
+    clearHistory(): void {
+        if (this.closed.length === 0 && this.log.length === 0) return;
+        const ids = [...this.closed, ...this.log].map((x) => x.id);
+        this.closed = [];
+        this.log = [];
+        this.announceRemoved(ids);
+        this.emit();
+    }
+
+    /** Called with the ids that leave the history or the order log, so stored candles and images can follow. */
+    onRemove(cb: (ids: string[]) => void): () => void {
+        this.removeListeners.add(cb);
+        return () => this.removeListeners.delete(cb);
+    }
+
+    /** Set or clear the tags and note of any trade or order the engine holds. */
+    setLabels(id: string, labels: { tags?: string[]; note?: string }): boolean {
+        const apply = <T extends { id: string; tags?: string[]; note?: string }>(list: readonly T[]): T[] | null => {
+            if (!list.some((x) => x.id === id)) return null;
+            return list.map((x) => {
+                if (x.id !== id) return x;
+                const { tags: _t, note: _n, ...rest } = x;
+                return { ...rest, ...(labels.tags?.length ? { tags: labels.tags } : {}), ...(labels.note ? { note: labels.note } : {}) } as T;
+            });
+        };
+        const open = apply(this.open);
+        if (open) this.open = open;
+        const pending = apply(this.pending);
+        if (pending) this.pending = pending;
+        const closed = apply(this.closed);
+        if (closed) this.closed = closed;
+        const log = apply(this.log);
+        if (log) this.log = log;
+        if (!(open || pending || closed || log)) return false;
+        this.emit();
+        return true;
+    }
+
+    /**
+     * Merge saved trades and order records into the history. An id the engine already holds is skipped,
+     * never overwritten. Callers pass records that already passed `isClosedTrade` / `isOrderRecord`.
+     */
+    importRecords(data: { trades: readonly SimTrade[]; orders: readonly SimOrderRecord[] }): { addedTrades: number; addedOrders: number; present: number } {
+        const held = new Set([...this.closed, ...this.log, ...this.open, ...this.pending].map((x) => x.id));
+        let present = 0;
+        const fresh = <T extends { id: string }>(list: readonly T[]): T[] =>
+            list.filter((x) => {
+                if (held.has(x.id)) {
+                    present += 1;
+                    return false;
+                }
+                held.add(x.id);
+                return true;
+            });
+        const trades = fresh(data.trades);
+        const orders = fresh(data.orders);
+        if (trades.length) this.closed = [...this.closed, ...trades.map((t) => ({ ...t }))].sort((a, b) => (a.closeTime ?? 0) - (b.closeTime ?? 0));
+        if (orders.length) this.log = [...this.log, ...orders.map((r) => ({ ...r }))];
+        if (trades.length || orders.length) this.emit();
+        return { addedTrades: trades.length, addedOrders: orders.length, present };
     }
 
     /** Replace the history with saved trades (untrusted: malformed entries are skipped). */
     restoreHistory(payload: unknown): void {
-        const raw = (payload as { trades?: unknown } | null)?.trades;
-        if (!Array.isArray(raw)) return;
-        this.closed = raw.filter(isClosedTrade).map((t) => ({ ...t }));
+        const saved = payload as { trades?: unknown; orders?: unknown } | null;
+        if (!Array.isArray(saved?.trades)) return;
+        this.closed = saved.trades.filter(isClosedTrade).map((t) => ({ ...t }));
+        this.log = Array.isArray(saved.orders) ? saved.orders.filter(isOrderRecord).map((r) => ({ ...r })) : [];
         this.emit();
     }
 
-    toJSON(): { trades: SimTrade[] } {
-        return { trades: this.closed.map((t) => ({ ...t })) };
+    toJSON(): { trades: SimTrade[]; orders: SimOrderRecord[] } {
+        return { trades: this.closed.map((t) => ({ ...t })), orders: this.log.map((r) => ({ ...r })) };
+    }
+
+    private announceRemoved(ids: string[]): void {
+        for (const cb of [...this.removeListeners]) cb(ids);
     }
 
     subscribe(cb: () => void): () => void {
@@ -346,20 +457,50 @@ export class SimulationEngine {
     }
 }
 
-function isClosedTrade(v: unknown): v is SimTrade {
+const finite = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
+const validNote = (x: unknown): boolean => x === undefined || (typeof x === 'string' && x.length <= MAX_NOTE_LENGTH);
+
+/** The order as the log keeps it once it ends without filling. */
+function recordOf(order: PendingOrder, outcome: OrderEnd, reason: OrderEndReason, endedAt: number): SimOrderRecord {
+    const { id, symbol, timeframe, side, entry, sl, tp, pip, trailPct, tags, note } = order;
+    return { id, symbol, timeframe, side, entry, sl, tp, pip, placedAt: order.openTime, endedAt, outcome, reason, ...(trailPct !== undefined ? { trailPct } : {}), ...(tags ? { tags } : {}), ...(note ? { note } : {}) };
+}
+
+/** Whether `v` has the shape of a saved closed trade (untrusted input: files and storage). */
+export function isClosedTrade(v: unknown): v is SimTrade {
     const t = v as Partial<SimTrade> | null;
-    const num = (x: unknown): boolean => typeof x === 'number' && Number.isFinite(x);
     return (
         !!t &&
         typeof t.id === 'string' &&
         typeof t.symbol === 'string' &&
         typeof t.timeframe === 'string' &&
         (t.side === 'long' || t.side === 'short') &&
-        num(t.entry) && num(t.sl) && num(t.tp) && num(t.openTime) && num(t.pip) && num(t.mfe) && num(t.mae) &&
-        num(t.closeTime) && num(t.exit) &&
-        (t.initialSl === undefined || num(t.initialSl)) &&
-        (t.peak === undefined || num(t.peak)) &&
-        (t.trailPct === undefined || (num(t.trailPct) && t.trailPct > 0)) &&
+        finite(t.entry) && finite(t.sl) && finite(t.tp) && finite(t.openTime) && finite(t.pip) && finite(t.mfe) && finite(t.mae) &&
+        finite(t.closeTime) && finite(t.exit) &&
+        (t.initialSl === undefined || finite(t.initialSl)) &&
+        (t.peak === undefined || finite(t.peak)) &&
+        (t.placedAt === undefined || finite(t.placedAt)) &&
+        (t.trailPct === undefined || (finite(t.trailPct) && t.trailPct > 0)) &&
+        (t.tags === undefined || isTags(t.tags)) &&
+        validNote(t.note) &&
         (t.outcome === 'tp' || t.outcome === 'sl' || t.outcome === 'manual')
+    );
+}
+
+/** Whether `v` has the shape of a saved order record. */
+export function isOrderRecord(v: unknown): v is SimOrderRecord {
+    const r = v as Partial<SimOrderRecord> | null;
+    return (
+        !!r &&
+        typeof r.id === 'string' &&
+        typeof r.symbol === 'string' &&
+        typeof r.timeframe === 'string' &&
+        (r.side === 'long' || r.side === 'short') &&
+        finite(r.entry) && finite(r.sl) && finite(r.tp) && finite(r.pip) && finite(r.placedAt) && finite(r.endedAt) &&
+        (r.trailPct === undefined || (finite(r.trailPct) && r.trailPct > 0)) &&
+        (r.outcome === 'cancelled' || r.outcome === 'unfilled') &&
+        (r.reason === 'user' || r.reason === 'replay') &&
+        (r.tags === undefined || isTags(r.tags)) &&
+        validNote(r.note)
     );
 }

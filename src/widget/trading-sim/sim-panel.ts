@@ -4,6 +4,7 @@
 // bars close at its stop or target. Closed trades build a history with statistics, saved in
 // the shell's document.
 import type { Vela } from '../../Vela';
+import type { ShotPair } from './trade-archive';
 import type { OHLCV } from '../../core/model/ohlcv';
 import { msg } from '../../core/i18n/message';
 import type { MessageLike } from '../../core/i18n/types';
@@ -23,10 +24,18 @@ import type { ButtonHandle } from '@luxalgo/vela-ui/button';
 import { priceDecimals } from '../price-decimals';
 import { timeframeMs } from '../timeframe';
 import { replayControlsOf } from '../replay/replay-controls';
-import { SimulationEngine, initialStop, pendingKind, plannedRR, resultPips, resultR, validLevels, type PendingKind, type PendingOrder, type SimTrade, type StopMove, type TradeSide } from './sim-engine';
+import { SimulationEngine, initialStop, pendingKind, plannedRR, resultPips, resultR, validLevels, type PendingKind, type PendingOrder, type SimOrderRecord, type SimTrade, type StopMove, type TradeSide } from './sim-engine';
 import { SimStatsView } from './sim-stats-view';
 import { PipSizes } from './pip-sizes';
 import { parsePositiveNumber } from './parse-number';
+import { createIndexedDbStore, type EvidenceStore } from './evidence-store';
+import { TradeEvidence } from './trade-evidence';
+import { afterPaint, captureShot } from './trade-shot';
+import { LOOKBACK_BARS, contextWindow, toCandle } from './trade-window';
+import { MAX_NOTE_LENGTH, cleanNote, formatTags, parseTags } from './trade-labels';
+import { buildBackup, buildDataset, parseBackup } from './trade-archive';
+import { downloadText, pickTextFile } from './download';
+import { createDialog } from '@luxalgo/vela-ui/dialog';
 
 const TEXT = {
     title: msg('widget.sim.title', 'Trading simulator'),
@@ -63,6 +72,28 @@ const TEXT = {
     outcomeSl: msg('widget.sim.outcome.sl', 'SL'),
     outcomeManual: msg('widget.sim.outcome.manual', 'Closed'),
     closedToast: msg('widget.sim.closedToast', '{symbol} {outcome}: {r}R'),
+    tags: msg('widget.sim.tags', 'Tags'),
+    note: msg('widget.sim.note', 'Note'),
+    tagsHint: msg('widget.sim.tagsHint', 'breakout, pullback'),
+    noteHint: msg('widget.sim.noteHint', 'Why this trade?'),
+    exportBackup: msg('widget.sim.exportBackup', 'Export backup'),
+    exportDataset: msg('widget.sim.exportDataset', 'Export dataset'),
+    importBackup: msg('widget.sim.importBackup', 'Import'),
+    includeShots: msg('widget.sim.includeShots', 'Include screenshots in backup'),
+    saveShots: msg('widget.sim.saveShots', 'Save screenshots'),
+    notFilledTitle: msg('widget.sim.notFilledTitle', 'Not filled'),
+    outcomeCancelled: msg('widget.sim.outcomeCancelled', 'Cancelled'),
+    outcomeUnfilled: msg('widget.sim.outcomeUnfilled', 'Not filled'),
+    removeOrder: msg('widget.sim.removeOrder', 'Remove order'),
+    shotPlaced: msg('widget.sim.shotPlaced', 'At order'),
+    shotClosed: msg('widget.sim.shotClosed', 'At close'),
+    shotsTitle: msg('widget.sim.shotsTitle', 'Trade screenshots'),
+    importDone: msg('widget.sim.importDone', '{added} added, {present} already present, {invalid} invalid'),
+    importMedia: msg('widget.sim.importMedia', '{count} saved candles or screenshots could not be read.'),
+    importJson: msg('widget.sim.importJson', 'That file is not valid JSON.'),
+    importFormat: msg('widget.sim.importFormat', 'That file is not a Vela trade backup.'),
+    importVersion: msg('widget.sim.importVersion', 'That backup was made by a newer version.'),
+    evidenceFailed: msg('widget.sim.evidenceFailed', "Could not save the trade's candles or screenshots. The simulator keeps working."),
     cancelledToast: msg('widget.sim.cancelledToast', '{count, plural, one {# open trade or order was} other {# open trades or orders were}} cancelled: the replay moved'),
     orderType: msg('widget.sim.orderType', 'Order type'),
     market: msg('widget.sim.market', 'Market'),
@@ -142,7 +173,19 @@ const CSS = css`@layer vela.chrome {
 .vela-sim-controls:where(:not([hidden])) { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; color: ${t.fg.muted}; }
 .vela-sim-controls .vela-input, .vela-sim-controls [data-slot='input'] { max-width: 84px; }
 .vela-sim-unit { color: ${t.fg.muted}; }
-.vela-sim-footer { margin-top: 10px; }
+.vela-sim-footer { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.vela-sim-files { display: flex; flex-wrap: wrap; gap: 6px; }
+.vela-sim-labels:where(:not([hidden])) { grid-column: 1 / -1; display: flex; gap: 6px; }
+.vela-sim-labels > * { flex: 1; min-width: 0; }
+.vela-sim-labels [data-slot='input'] { max-width: none; }
+.vela-sim-shots:where(:not([hidden])) { grid-column: 1 / -1; display: flex; gap: 6px; }
+.vela-sim-shot { padding: 0; border: 1px solid ${t.border.soft}; border-radius: ${t.radius.sm}; background: transparent; cursor: pointer; overflow: hidden; line-height: 0; }
+.vela-sim-shot img { height: 48px; width: auto; display: block; }
+.vela-sim-shots-large { display: flex; flex-wrap: wrap; gap: 12px; }
+.vela-sim-shots-large figure { margin: 0; flex: 1 1 320px; min-width: 0; }
+.vela-sim-shots-large img { width: 100%; height: auto; border: 1px solid ${t.border.soft}; border-radius: ${t.radius.sm}; }
+.vela-sim-shots-large figcaption { margin-top: 4px; color: ${t.fg.muted}; }
+.vela-sim-row[data-wide] .vela-input, .vela-sim-row[data-wide] [data-slot='input'] { max-width: none; flex: 1; }
 .vela-sim-table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; font-variant-numeric: tabular-nums; }
 .vela-sim-table th { color: ${t.fg.muted}; font-weight: 500; text-align: end; padding: 3px 4px; }
 .vela-sim-table td { text-align: end; padding: 3px 4px; border-top: 1px solid ${t.border.faint}; }
@@ -150,6 +193,13 @@ const CSS = css`@layer vela.chrome {
 .vela-sim-table tr[data-best] td { color: ${t.accent}; font-weight: 600; }
 
 }`;
+
+/** Test seams: how a screenshot is taken and how the panel waits for the chart to repaint. */
+export interface ViewOptions {
+    capture?: () => string | null;
+    paint?: () => Promise<void>;
+    download?: (filename: string, text: string, mime: string) => void;
+}
 
 /** One simulator per shell, keyed by its root — the panel and the saved document share it. */
 const engines = new WeakMap<HTMLElement, SimulationEngine>();
@@ -167,6 +217,32 @@ export function simulatorOf(ctx: Pick<WidgetContext, 'host'>): SimulationEngine 
     let e = engines.get(ctx.host);
     if (!e) engines.set(ctx.host, (e = new SimulationEngine()));
     return e;
+}
+
+const evidences = new WeakMap<HTMLElement, TradeEvidence>();
+
+/** The candles and screenshots of a shell's trades. `store` applies when the shell has none yet (tests pass a fake). */
+export function evidenceOf(ctx: Pick<WidgetContext, 'host' | 'i18n' | 'toast'>, store?: EvidenceStore | null): TradeEvidence {
+    let e = evidences.get(ctx.host);
+    if (!e) {
+        const toast = (): void => ctx.toast(ctx.i18n.t(TEXT.evidenceFailed), 'error');
+        evidences.set(ctx.host, (e = new TradeEvidence(store === undefined ? createIndexedDbStore() : store, toast)));
+    }
+    return e;
+}
+
+/** What the shell's document keeps of the simulator, or undefined when there is nothing to keep. */
+export function serializeSim(engine: SimulationEngine, pips: PipSizes, evidence: TradeEvidence): Record<string, unknown> | undefined {
+    const pipSizes = pips.toJSON();
+    if (!(engine.history.length || engine.orderLog.length || Object.keys(pipSizes).length || !evidence.screenshots)) return undefined;
+    return { ...engine.toJSON(), pipSizes, settings: { screenshots: evidence.screenshots } };
+}
+
+export function restoreSim(payload: unknown, engine: SimulationEngine, pips: PipSizes, evidence: TradeEvidence): void {
+    const saved = payload as { pipSizes?: unknown; settings?: { screenshots?: unknown } } | null;
+    engine.restoreHistory(payload);
+    pips.restore(saved?.pipSizes);
+    if (typeof saved?.settings?.screenshots === 'boolean') evidence.screenshots = saved.settings.screenshots;
 }
 
 function replayOf(ctx: WidgetContext): WorkspaceReplay | null {
@@ -227,11 +303,23 @@ export class TradingSimView {
     /** The drawing of each open trade. */
     private readonly drawingOf = new Map<string, DrawingRef>();
     private lastBar: OHLCV | null = null;
+    /** The newest bar the chart delivered, as the user saw it: a bar still forming differs from the provider's finished one. */
+    private seenBar: OHLCV | null = null;
     private pip = 0;
     private decimals = 2;
     private readonly statsView: SimStatsView;
     private confirmClear = false;
     private warning: MessageLike | null = null;
+    private includeShots = true;
+    private historyDirty = false;
+    /** Saved screenshots by trade id (an empty entry: none saved), so a replay step does not re-read the store. */
+    private readonly shotCache = new Map<string, ShotPair>();
+    private readonly shotsLoading = new Set<string>();
+    /** Bumped whenever the screenshot cache changes, so the History signature sees it. */
+    private shotRev = 0;
+    private historySig = '';
+    /** Orders that ended before they filled: their plan screenshot must not be saved after the fact. */
+    private readonly noPlanShot = new Set<string>();
     // ── the order form: built once, so what the user types survives a replay step ──
     private orderType: 'market' | 'limit' = 'market';
     private trailOn = false;
@@ -255,13 +343,23 @@ export class TradingSimView {
     private trailSwitch!: ReturnType<typeof createSwitch>;
     private trailLabel!: HTMLElement;
     private trailInput!: ReturnType<typeof createInput>;
+    private tagsLabel!: HTMLElement;
+    private tagsInput!: ReturnType<typeof createInput>;
+    private noteLabel!: HTMLElement;
+    private noteInput!: ReturnType<typeof createInput>;
     private orderDetails!: HTMLElement;
     private orderWarning!: HTMLElement;
     private orderActions!: HTMLElement;
     private placeBtn!: ButtonHandle;
     private cancelBtn!: ButtonHandle;
 
-    constructor(private readonly ctx: WidgetContext, private readonly engine: SimulationEngine, private readonly pips: PipSizes) {
+    constructor(
+        private readonly ctx: WidgetContext,
+        private readonly engine: SimulationEngine,
+        private readonly pips: PipSizes,
+        private readonly evidence: TradeEvidence,
+        private readonly opts: ViewOptions = {},
+    ) {
         injectChromeStyles(STYLE_ID, CSS);
         const doc = ctx.host.ownerDocument;
         this.el = doc.createElement('div');
@@ -277,6 +375,9 @@ export class TradingSimView {
             // Focus moving between the page's own controls waits; leaving it catches up on what was skipped.
             if (this.positionsDirty && !this.pages.positions.contains(e.relatedTarget as Node | null)) setTimeout(() => this.render(), 0);
         });
+        this.pages.history.addEventListener('focusout', (e) => {
+            if (this.historyDirty && !this.pages.history.contains(e.relatedTarget as Node | null)) setTimeout(() => this.render(), 0);
+        });
         this.el.append(this.tabs.el, ...Object.values(this.pages));
         this.offs.push(
             engine.subscribe(() => {
@@ -287,6 +388,12 @@ export class TradingSimView {
             pips.subscribe(() => {
                 this.ctx.stateChanged();
                 this.render();
+            }),
+            engine.onRemove((ids) => {
+                for (const id of ids) {
+                    this.forgetShots(id);
+                    void this.evidence.remove(id);
+                }
             }),
             engine.onFill((trade) => {
                 const ref = this.drawingOf.get(trade.id);
@@ -349,11 +456,15 @@ export class TradingSimView {
         const chart = this.chart;
         if (!chart || !this.replayActive) return;
         this.lastBar = bar;
+        this.seenBar = bar;
         const { symbol = '', timeframe = '' } = chart.market;
+        // The candle joins the windows first, so the bar that closes a trade is in its window.
+        this.evidence.append(symbol, timeframe, toCandle(bar));
         const done = this.engine.onBar(symbol, timeframe, bar);
         for (const trade of done) {
-            this.dropDrawing(this.drawingOf.get(trade.id));
+            const ref = this.drawingOf.get(trade.id);
             this.drawingOf.delete(trade.id);
+            void this.finishTrade(trade, ref);
             const outcome = this.ctx.i18n.t(trade.outcome === 'tp' ? TEXT.outcomeTp : TEXT.outcomeSl);
             const r = this.ctx.i18n.format.price(resultR(trade), { decimals: 2 });
             this.ctx.toast(this.ctx.i18n.t(TEXT.closedToast, { symbol: trade.symbol, outcome, r }), trade.outcome === 'tp' ? 'success' : 'error');
@@ -364,14 +475,75 @@ export class TradingSimView {
     /** A replay that seeks or ends takes its open trades and the draft with it. */
     private onReplayMoved(): void {
         const dropped = this.engine.cancelOpen();
-        const waiting = this.engine.cancelAllPending();
+        const waiting = this.engine.cancelAllPending(this.lastBar?.time ?? 0);
         for (const t of [...dropped, ...waiting]) this.dropDrawing(this.drawingOf.get(t.id));
+        // A trade the replay cancelled has no result, so nothing of it is kept; an order that never
+        // filled keeps its candles but not the plan's screenshot.
+        for (const t of dropped) {
+            this.evidence.discard(t.id);
+            void this.evidence.remove(t.id);
+        }
+        for (const o of waiting) {
+            this.noPlanShot.add(o.id);
+            void this.evidence.removeShot(o.id, 'open');
+            void this.evidence.finish(o.id);
+        }
         this.drawingOf.clear();
         this.cancelDraft();
         this.lastBar = null;
+        this.seenBar = null;
         const count = dropped.length + waiting.length;
         if (count) this.ctx.toast(this.ctx.i18n.t(TEXT.cancelledToast, { count }), 'info');
         this.render();
+    }
+
+    /** `bars` with the one at the seen bar's time replaced by what the replay showed (never the provider's later-finished version). */
+    private withSeen(bars: OHLCV[], seen: OHLCV | null): OHLCV[] {
+        const last = bars[bars.length - 1];
+        return seen && last && last.time === seen.time ? [...bars.slice(0, -1), seen] : bars;
+    }
+
+    /** A screenshot of the chart as it is now; null when the renderer cannot make one. */
+    private capture(): string | null {
+        if (this.opts.capture) return this.opts.capture();
+        try {
+            return captureShot(this.chart?.renderer.screenshotCanvas() ?? null, this.ctx.host.ownerDocument);
+        } catch {
+            return null;
+        }
+    }
+
+    private paint(): Promise<void> {
+        if (this.opts.paint) return this.opts.paint();
+        const win = this.ctx.host.ownerDocument.defaultView;
+        return win ? afterPaint(win) : Promise.resolve();
+    }
+
+    /** Save a screenshot of the chart once it has repainted. A failure never reaches the trade. */
+    private async shoot(id: string, kind: 'open' | 'close'): Promise<void> {
+        try {
+            await this.paint();
+            if (kind === 'open' && this.noPlanShot.has(id)) return;
+            await this.evidence.saveShot(id, kind, this.capture());
+        } catch {
+            // best effort: a trade does not depend on its picture
+        }
+    }
+
+    /**
+     * A trade ended: stop its window at this bar, take the closing screenshot while its plan is still
+     * drawn, then remove the drawing.
+     */
+    private async finishTrade(trade: SimTrade, ref: DrawingRef | undefined): Promise<void> {
+        const saved = this.evidence.finish(trade.id);
+        try {
+            await this.shoot(trade.id, 'close');
+            await saved;
+        } finally {
+            this.dropDrawing(ref);
+            this.shotCache.delete(trade.id);
+            this.render();
+        }
     }
 
     private dropDrawing(ref: DrawingRef | undefined): void {
@@ -389,7 +561,7 @@ export class TradingSimView {
         replay.pause();
         this.cancelDraft();
         const { symbol = '', timeframe = '' } = chart.market;
-        const bars = await barsUpTo(chart, symbol, timeframe, cursor, ATR_BARS + 1).catch(() => [] as OHLCV[]);
+        const bars = this.withSeen(await barsUpTo(chart, symbol, timeframe, cursor, ATR_BARS + 1).catch(() => [] as OHLCV[]), this.seenBar);
         const last = bars[bars.length - 1] ?? this.lastBar;
         if (!last) {
             this.ctx.toast(this.ctx.i18n.t(TEXT.noPrice), 'error');
@@ -485,9 +657,15 @@ export class TradingSimView {
             return;
         }
         const { symbol = '', timeframe = '' } = chart.market;
-        const full = { ...order, symbol, timeframe, openTime: last.time, pip, trailPct: this.trailOn ? this.trailPct : undefined };
+        const tags = parseTags(this.tagsInput.input.value);
+        const note = cleanNote(this.noteInput.input.value);
+        const full = { ...order, symbol, timeframe, openTime: last.time, pip, trailPct: this.trailOn ? this.trailPct : undefined, ...(tags.length ? { tags } : {}), ...(note ? { note } : {}) };
         const placed = limit ? this.engine.placePending(full, last.close) : this.engine.place(full);
         if (!placed) return;
+        const seen = this.seenBar;
+        this.evidence.begin(placed.id, symbol, timeframe, last.time, barsUpTo(chart, symbol, timeframe, last.time, LOOKBACK_BARS).then((b) => contextWindow(this.withSeen(b, seen), last.time)));
+        void this.shoot(placed.id, 'open');
+        this.noteInput.input.value = '';
         const d = chart.drawings.all().find((x) => x.id === draft.drawingId);
         if (d && d.anchors[0] && Math.abs(d.anchors[0].price - order.entry) > 0) {
             chart.drawings.update(draft.drawingId, { anchors: [{ ...d.anchors[0], price: order.entry }, ...d.anchors.slice(1)] });
@@ -573,9 +751,12 @@ export class TradingSimView {
     }
 
     cancelPendingOrder(id: string): void {
-        if (!this.engine.cancelPending(id)) return;
+        if (!this.engine.cancelPending(id, this.lastBar?.time ?? 0)) return;
         this.dropDrawing(this.drawingOf.get(id));
         this.drawingOf.delete(id);
+        this.noPlanShot.add(id);
+        void this.evidence.removeShot(id, 'open');
+        void this.evidence.finish(id);
     }
 
     cancelDraft(): void {
@@ -591,8 +772,9 @@ export class TradingSimView {
         if (!last) return;
         const trade = this.engine.close(id, last.close, last.time);
         if (trade) {
-            this.dropDrawing(this.drawingOf.get(id));
+            const ref = this.drawingOf.get(id);
             this.drawingOf.delete(id);
+            void this.finishTrade(trade, ref);
         }
     }
 
@@ -671,7 +853,20 @@ export class TradingSimView {
         this.trailInput.input.inputMode = 'decimal';
         this.trailInput.input.addEventListener('change', () => this.commitTrail(this.trailInput.input.value));
         trailRow.append(this.trailSwitch.el, this.trailLabel, this.trailInput.el, Object.assign(doc.createElement('span'), { className: 'vela-sim-unit', textContent: '%' }));
-        this.orderForm.append(this.typeGroup.el, this.limitRow, trailRow);
+        const labelRow = (): HTMLElement => {
+            const row = el('div', 'vela-sim-row');
+            row.dataset.wide = '';
+            return row;
+        };
+        const tagsRow = labelRow();
+        this.tagsLabel = doc.createElement('span');
+        this.tagsInput = createInput({ size: 'sm' });
+        tagsRow.append(this.tagsLabel, this.tagsInput.el);
+        const noteRow = labelRow();
+        this.noteLabel = doc.createElement('span');
+        this.noteInput = createInput({ size: 'sm' });
+        noteRow.append(this.noteLabel, this.noteInput.el);
+        this.orderForm.append(this.typeGroup.el, this.limitRow, trailRow, tagsRow, noteRow);
 
         this.orderDetails = el('div', 'vela-sim-details');
         this.orderWarning = el('p', 'vela-sim-note vela-sim-warn');
@@ -729,6 +924,12 @@ export class TradingSimView {
             this.typeGroup.setItems(this.typeItems());
             this.typeGroup.setValue(this.orderType);
         }
+        this.tagsLabel.textContent = tr.t(TEXT.tags);
+        this.noteLabel.textContent = tr.t(TEXT.note);
+        this.tagsInput.input.setAttribute('aria-label', tr.t(TEXT.tags));
+        this.noteInput.input.setAttribute('aria-label', tr.t(TEXT.note));
+        this.tagsInput.input.placeholder = tr.t(TEXT.tagsHint);
+        this.noteInput.input.placeholder = tr.t(TEXT.noteHint);
         this.limitLabel.textContent = tr.t(TEXT.limitPrice);
         this.trailLabel.textContent = tr.t(TEXT.trailing);
         this.trailSwitch.el.querySelector('input')?.setAttribute('aria-label', tr.t(TEXT.trailing));
@@ -821,6 +1022,11 @@ export class TradingSimView {
             `SL ${this.fmtPrice(trade.sl, decimals)}${was} · TP ${this.fmtPrice(trade.tp, decimals)} · 1:${this.fmtNum(plannedRR(trade))}${trail}${outcome}`;
         card.append(title, rEl, action, sub);
         if (kind === 'open') card.append(...this.stopControls(trade, decimals));
+        card.append(this.labelRow(trade.id, trade.tags, trade.note));
+        if (kind === 'closed') {
+            const strip = this.shotStrip(trade.id);
+            if (strip) card.append(strip);
+        }
         return card;
     }
 
@@ -860,6 +1066,106 @@ export class TradingSimView {
         return [stopRow, trailRow];
     }
 
+    /** Tags and a note for a trade or order the engine holds; each change is saved at once. */
+    private labelRow(id: string, tags: readonly string[] | undefined, note: string | undefined): HTMLElement {
+        const doc = this.el.ownerDocument;
+        const tr = this.ctx.i18n;
+        const row = Object.assign(doc.createElement('div'), { className: 'vela-sim-labels' });
+        const tagsInput = createInput({ size: 'sm' });
+        const noteInput = createInput({ size: 'sm' });
+        tagsInput.input.value = formatTags(tags);
+        noteInput.input.value = note ?? '';
+        noteInput.input.maxLength = MAX_NOTE_LENGTH;
+        tagsInput.input.setAttribute('aria-label', tr.t(TEXT.tags));
+        noteInput.input.setAttribute('aria-label', tr.t(TEXT.note));
+        tagsInput.input.placeholder = tr.t(TEXT.tagsHint);
+        noteInput.input.placeholder = tr.t(TEXT.noteHint);
+        const commit = (): void => void this.engine.setLabels(id, { tags: parseTags(tagsInput.input.value), note: cleanNote(noteInput.input.value) });
+        tagsInput.input.addEventListener('change', commit);
+        noteInput.input.addEventListener('change', commit);
+        row.append(tagsInput.el, noteInput.el);
+        return row;
+    }
+
+    private forgetShots(id: string): void {
+        this.shotCache.delete(id);
+        this.shotRev += 1;
+    }
+
+    /** The saved screenshots of a closed trade as thumbnails; empty until they load, absent when there are none. */
+    private shotStrip(id: string): HTMLElement | null {
+        const doc = this.el.ownerDocument;
+        const cached = this.shotCache.get(id);
+        const strip = Object.assign(doc.createElement('div'), { className: 'vela-sim-shots' });
+        const fill = (pair: ShotPair): void => {
+            const tr = this.ctx.i18n;
+            strip.replaceChildren();
+            for (const [kind, label] of [['open', TEXT.shotPlaced], ['close', TEXT.shotClosed]] as const) {
+                const url = pair[kind];
+                if (!url) continue;
+                const button = Object.assign(doc.createElement('button'), { type: 'button', className: 'vela-sim-shot', title: tr.t(label) });
+                button.append(Object.assign(doc.createElement('img'), { src: url, alt: tr.t(label) }));
+                button.addEventListener('click', () => this.showShots(pair));
+                strip.append(button);
+            }
+            strip.hidden = strip.childElementCount === 0;
+        };
+        if (cached) {
+            if (!cached.open && !cached.close) return null;
+            fill(cached);
+            return strip;
+        }
+        // Nothing is read until the History tab is open: a hidden tab would hold every screenshot in memory for nothing.
+        if (this.tabs.value !== 'history') return null;
+        strip.hidden = true;
+        if (!this.shotsLoading.has(id)) {
+            this.shotsLoading.add(id);
+            void this.evidence.read([id]).then(({ images }) => {
+                this.shotsLoading.delete(id);
+                this.shotCache.set(id, images[id] ?? {});
+                this.shotRev += 1;
+                if (this.shotsLoading.size === 0) this.render(); // once, after the last card's screenshots are in
+            });
+        }
+        return strip;
+    }
+
+    /** Both screenshots of a trade, large and side by side. */
+    private showShots(pair: ShotPair): void {
+        const doc = this.el.ownerDocument;
+        const tr = this.ctx.i18n;
+        const body = Object.assign(doc.createElement('div'), { className: 'vela-sim-shots-large' });
+        for (const [kind, label] of [['open', TEXT.shotPlaced], ['close', TEXT.shotClosed]] as const) {
+            const url = pair[kind];
+            if (!url) continue;
+            const figure = doc.createElement('figure');
+            figure.append(Object.assign(doc.createElement('img'), { src: url, alt: tr.t(label) }), Object.assign(doc.createElement('figcaption'), { textContent: tr.t(label) }));
+            body.append(figure);
+        }
+        const dialog = createDialog({ title: tr.t(TEXT.shotsTitle), content: body, host: this.ctx.host, onOpenChange: (open) => !open && dialog.destroy() });
+        dialog.show();
+    }
+
+    private recordCard(record: SimOrderRecord): HTMLElement {
+        const doc = this.el.ownerDocument;
+        const tr = this.ctx.i18n;
+        const card = doc.createElement('div');
+        card.className = 'vela-sim-trade';
+        card.dataset.record = record.id;
+        const title = doc.createElement('span');
+        title.className = 'vela-sim-trade-title';
+        const side = Object.assign(doc.createElement('span'), { className: 'vela-sim-side', textContent: tr.t(record.side === 'long' ? TEXT.long : TEXT.short) });
+        side.dataset.side = record.side;
+        title.append(side, ` ${record.symbol} · ${record.timeframe}`);
+        const decimals = priceDecimals(record.entry, record.pip);
+        const price = Object.assign(doc.createElement('span'), { className: 'vela-sim-num', textContent: this.fmtPrice(record.entry, decimals) });
+        const remove = createButton({ icon: 'trash', size: 'icon-xs', variant: 'ghost', label: tr.t(TEXT.removeOrder), onClick: () => this.engine.removeOrderRecord(record.id) }).el;
+        const sub = Object.assign(doc.createElement('span'), { className: 'vela-sim-trade-sub' });
+        sub.textContent = `SL ${this.fmtPrice(record.sl, decimals)} · TP ${this.fmtPrice(record.tp, decimals)} · 1:${this.fmtNum(plannedRR(record))} · ${tr.t(record.outcome === 'cancelled' ? TEXT.outcomeCancelled : TEXT.outcomeUnfilled)}`;
+        card.append(title, price, remove, sub, this.labelRow(record.id, record.tags, record.note));
+        return card;
+    }
+
     private pendingCard(order: PendingOrder): HTMLElement {
         const doc = this.el.ownerDocument;
         const tr = this.ctx.i18n;
@@ -879,7 +1185,7 @@ export class TradingSimView {
         const sub = Object.assign(doc.createElement('span'), { className: 'vela-sim-trade-sub' });
         const trail = order.trailPct !== undefined ? ` · ${tr.t(TEXT.trailSub, { pct: String(order.trailPct) })}` : '';
         sub.textContent = `SL ${this.fmtPrice(order.sl, decimals)} · TP ${this.fmtPrice(order.tp, decimals)} · 1:${this.fmtNum(plannedRR(order))}${trail}`;
-        card.append(title, price, cancel, sub);
+        card.append(title, price, cancel, sub, this.labelRow(order.id, order.tags, order.note));
         return card;
     }
 
@@ -916,33 +1222,126 @@ export class TradingSimView {
     private renderHistory(): void {
         const page = this.pages.history;
         const tr = this.ctx.i18n;
-        page.replaceChildren();
-        const trades = [...this.engine.history].reverse();
-        if (!trades.length) {
-            this.confirmClear = false;
-            page.append(this.note(TEXT.noHistory));
+        const doc = this.el.ownerDocument;
+        // Like the Positions page: a replay step must not rebuild the cards under the user's typing.
+        const active = doc.activeElement;
+        if (active instanceof HTMLInputElement && active.type !== 'checkbox' && page.contains(active)) {
+            this.historyDirty = true;
             return;
         }
-        const list = Object.assign(this.el.ownerDocument.createElement('div'), { className: 'vela-sim-list' });
-        list.append(...trades.map((t) => this.tradeCard(t, 'closed')));
-        const footer = Object.assign(this.el.ownerDocument.createElement('div'), { className: 'vela-sim-footer' });
+        this.historyDirty = false;
+        // A replay step changes nothing this page shows: rebuilding its cards (and their images) each bar is waste.
+        const sig = JSON.stringify([this.engine.history, this.engine.orderLog, tr.locale, this.pips.toJSON(), this.confirmClear, this.includeShots, this.evidence.screenshots, this.tabs.value === 'history', this.shotRev]);
+        if (sig === this.historySig && page.childElementCount > 0) return;
+        this.historySig = sig;
+        page.replaceChildren();
+        const trades = [...this.engine.history].reverse();
+        const records = [...this.engine.orderLog].reverse();
+        const something = trades.length > 0 || records.length > 0;
+        if (!something) {
+            this.confirmClear = false;
+            page.append(this.note(TEXT.noHistory));
+        } else {
+            const group = (title: MessageLike | null, cards: HTMLElement[]): void => {
+                if (title) page.append(Object.assign(doc.createElement('h4'), { className: 'vela-sim-group', textContent: tr.t(title) }));
+                page.append(Object.assign(doc.createElement('div'), { className: 'vela-sim-list' }));
+                page.lastElementChild!.append(...cards);
+            };
+            if (trades.length) group(null, trades.map((t) => this.tradeCard(t, 'closed')));
+            if (records.length) group(TEXT.notFilledTitle, records.map((r) => this.recordCard(r)));
+        }
+        const footer = Object.assign(doc.createElement('div'), { className: 'vela-sim-footer' });
+        const files = Object.assign(doc.createElement('div'), { className: 'vela-sim-files' });
+        const exportBackup = createButton({ text: tr.t(TEXT.exportBackup), size: 'sm', variant: 'outline', disabled: !something, onClick: () => void this.exportBackup() });
+        const exportDataset = createButton({ text: tr.t(TEXT.exportDataset), size: 'sm', variant: 'outline', disabled: !something, onClick: () => void this.exportDataset() });
+        const importButton = createButton({ text: tr.t(TEXT.importBackup), size: 'sm', variant: 'outline', onClick: () => void this.pickAndImport() });
+        files.append(exportBackup.el, exportDataset.el, importButton.el);
+        const toggle = (label: MessageLike, checked: boolean, onChange: (on: boolean) => void): HTMLElement => {
+            const row = Object.assign(doc.createElement('div'), { className: 'vela-sim-row' });
+            const sw = createSwitch({ defaultChecked: checked, onCheckedChange: onChange });
+            sw.el.querySelector('input')?.setAttribute('aria-label', tr.t(label));
+            row.append(sw.el, Object.assign(doc.createElement('span'), { textContent: tr.t(label) }));
+            return row;
+        };
         footer.append(
-            createButton({
-                text: tr.t(this.confirmClear ? TEXT.confirmClear : TEXT.clearAll),
-                size: 'sm',
-                variant: this.confirmClear ? 'destructive' : 'outline',
-                onClick: () => {
-                    if (this.confirmClear) {
-                        this.confirmClear = false;
-                        this.engine.clearHistory();
-                    } else {
-                        this.confirmClear = true;
-                        this.render();
-                    }
-                },
-            }).el,
+            files,
+            toggle(TEXT.includeShots, this.includeShots, (on) => (this.includeShots = on)),
+            toggle(TEXT.saveShots, this.evidence.screenshots, (on) => {
+                this.evidence.screenshots = on;
+                this.ctx.stateChanged();
+            }),
         );
-        page.append(list, footer);
+        if (something) {
+            footer.append(
+                createButton({
+                    text: tr.t(this.confirmClear ? TEXT.confirmClear : TEXT.clearAll),
+                    size: 'sm',
+                    variant: this.confirmClear ? 'destructive' : 'outline',
+                    onClick: () => {
+                        if (this.confirmClear) {
+                            this.confirmClear = false;
+                            this.engine.clearHistory();
+                        } else {
+                            this.confirmClear = true;
+                            this.render();
+                        }
+                    },
+                }).el,
+            );
+        }
+        page.append(footer);
+    }
+
+    private download(filename: string, text: string, mime: string): void {
+        if (this.opts.download) this.opts.download(filename, text, mime);
+        else downloadText(this.ctx.host.ownerDocument, filename, text, mime);
+    }
+
+    private static stamp(): string {
+        return new Date().toISOString().slice(0, 10);
+    }
+
+    /** Everything in the history, the order log, and the pip sizes as one file that imports back unchanged. */
+    async exportBackup(): Promise<void> {
+        const { history, orderLog } = this.engine;
+        const data = await this.evidence.read([...history, ...orderLog].map((x) => x.id));
+        const backup = buildBackup({ trades: history, orders: orderLog, pipSizes: this.pips.toJSON(), windows: data.windows, images: data.images, includeImages: this.includeShots, now: Date.now() });
+        this.download(`vela-trades-${TradingSimView.stamp()}.json`, JSON.stringify(backup), 'application/json');
+    }
+
+    /** One JSON object per line, for a notebook or a training script. */
+    async exportDataset(): Promise<void> {
+        const { history, orderLog } = this.engine;
+        const data = await this.evidence.read([...history, ...orderLog].map((x) => x.id));
+        this.download(`vela-dataset-${TradingSimView.stamp()}.jsonl`, buildDataset({ trades: history, orders: orderLog, windows: data.windows }), 'application/x-ndjson');
+    }
+
+    private async pickAndImport(): Promise<void> {
+        const text = await pickTextFile(this.ctx.host.ownerDocument);
+        if (text !== null) await this.importText(text);
+    }
+
+    /** Merge a backup file into the history. A file that cannot be used changes nothing. */
+    async importText(text: string): Promise<void> {
+        const tr = this.ctx.i18n;
+        const parsed = parseBackup(text);
+        if (!parsed.ok) {
+            this.ctx.toast(tr.t(parsed.reason === 'json' ? TEXT.importJson : parsed.reason === 'format' ? TEXT.importFormat : TEXT.importVersion), 'error');
+            return;
+        }
+        const { backup } = parsed;
+        const held = (): Set<string> => new Set([...this.engine.history, ...this.engine.orderLog].map((x) => x.id));
+        const before = held();
+        const counts = this.engine.importRecords({ trades: backup.trades, orders: backup.orders });
+        const after = held();
+        const added = [...after].filter((id) => !before.has(id));
+        const only = <T,>(map: Record<string, T>): Record<string, T> => Object.fromEntries(added.filter((id) => Object.prototype.hasOwnProperty.call(map, id)).map((id) => [id, map[id]!]));
+        await this.evidence.write({ windows: only(backup.windows), images: only(backup.images) });
+        for (const id of added) this.forgetShots(id);
+        for (const [symbol, pip] of Object.entries(backup.pipSizes)) if (this.pips.get(symbol) === undefined) this.pips.set(symbol, pip);
+        this.ctx.toast(tr.t(TEXT.importDone, { added: counts.addedTrades + counts.addedOrders, present: counts.present, invalid: parsed.invalid }), 'info');
+        if (parsed.droppedMedia) this.ctx.toast(tr.t(TEXT.importMedia, { count: parsed.droppedMedia }), 'info');
+        this.render();
     }
 
     private renderStats(): void {
@@ -974,7 +1373,7 @@ export function installTradingSimulator(): void {
         minWidth: 280,
         maxWidth: 560,
         mount(ctx, body) {
-            const view = new TradingSimView(ctx, simulatorOf(ctx), pipSizesOf(ctx));
+            const view = new TradingSimView(ctx, simulatorOf(ctx), pipSizesOf(ctx), evidenceOf(ctx));
             body.append(view.el);
             return {
                 onChart: (chart) => view.bindChart(chart),
@@ -986,14 +1385,7 @@ export function installTradingSimulator(): void {
     registerStatePersistence({
         key: 'vela.tradingSim',
         scope: 'global',
-        serialize: (ctx) => {
-            const e = simulatorOf(ctx);
-            const pipSizes = pipSizesOf(ctx).toJSON();
-            return e.history.length || Object.keys(pipSizes).length ? { ...e.toJSON(), pipSizes } : undefined;
-        },
-        restore: (payload, ctx) => {
-            simulatorOf(ctx).restoreHistory(payload);
-            pipSizesOf(ctx).restore((payload as { pipSizes?: unknown } | null)?.pipSizes);
-        },
+        serialize: (ctx) => serializeSim(simulatorOf(ctx), pipSizesOf(ctx), evidenceOf(ctx)),
+        restore: (payload, ctx) => restoreSim(payload, simulatorOf(ctx), pipSizesOf(ctx), evidenceOf(ctx)),
     });
 }

@@ -419,12 +419,12 @@ describe('pending orders', () => {
         const e = new SimulationEngine();
         const a = e.placePending(buyLimit(), 100)!;
         const b = e.placePending(buyLimit({ entry: 94 }), 100)!;
-        expect(e.cancelPending(a.id)).toBe(true);
-        expect(e.cancelPending(a.id)).toBe(false);
-        expect(e.cancelAllPending().map((o) => o.id)).toEqual([b.id]);
+        expect(e.cancelPending(a.id, 10)).toBe(true);
+        expect(e.cancelPending(a.id, 10)).toBe(false);
+        expect(e.cancelAllPending(10).map((o) => o.id)).toEqual([b.id]);
         let emits = 0;
         e.subscribe(() => (emits += 1));
-        expect(e.cancelAllPending()).toEqual([]);
+        expect(e.cancelAllPending(10)).toEqual([]);
         expect(emits).toBe(0);
     });
 
@@ -479,5 +479,139 @@ describe('parsePositiveNumber', () => {
         expect(parsePositiveNumber('12.5')).toBe(12.5);
         expect(parsePositiveNumber(' 0.01 ')).toBe(0.01);
         for (const bad of ['abc', '-', '1,5', '0', '', '1e3']) expect(parsePositiveNumber(bad), bad).toBeNull();
+    });
+});
+
+describe('trade journal records', () => {
+    const buyLimit = (over: Partial<OpenOrder> = {}): OpenOrder => long({ entry: 95, sl: 90, tp: 120, ...over });
+    const closedTrade = (e: SimulationEngine, over: Partial<OpenOrder> = {}): SimTrade => {
+        const t = e.place(long(over))!;
+        e.onBar('BTC', '60', bar(2_000, 99, 125));
+        return e.history.find((h) => h.id === t.id)!;
+    };
+
+    it('a market trade remembers the bar it was placed on', () => {
+        const e = new SimulationEngine();
+        expect(e.place(long())!.placedAt).toBe(1_000);
+    });
+
+    it('a limit order that fills later keeps its placement bar', () => {
+        const e = new SimulationEngine();
+        e.placePending(buyLimit(), 100);
+        e.onBar('BTC', '60', bar(3_000, 94, 97));
+        expect(e.openTrades[0]).toEqual(expect.objectContaining({ placedAt: 1_000, openTime: 3_000 }));
+    });
+
+    it('labels travel from the order into the trade', () => {
+        const e = new SimulationEngine();
+        const t = e.place(long({ tags: ['breakout'], note: 'why' }))!;
+        expect(t).toEqual(expect.objectContaining({ tags: ['breakout'], note: 'why' }));
+    });
+
+    it('cancelling a pending order logs it without touching the history', () => {
+        const e = new SimulationEngine();
+        const p = e.placePending(buyLimit(), 100)!;
+        expect(e.cancelPending(p.id, 50)).toBe(true);
+        expect(e.orderLog).toEqual([expect.objectContaining({ id: p.id, outcome: 'cancelled', reason: 'user', endedAt: 50, placedAt: 1_000, entry: 95, sl: 90, tp: 120 })]);
+        expect(e.history).toHaveLength(0);
+    });
+
+    it('cancelling every pending order logs them as unfilled by the replay', () => {
+        const e = new SimulationEngine();
+        e.placePending(buyLimit(), 100);
+        e.placePending(buyLimit({ entry: 96 }), 100);
+        expect(e.cancelAllPending(60)).toHaveLength(2);
+        expect(e.orderLog.map((r) => [r.outcome, r.reason, r.endedAt])).toEqual([['unfilled', 'replay', 60], ['unfilled', 'replay', 60]]);
+    });
+
+    it('logged orders never change the statistics', () => {
+        const e = new SimulationEngine();
+        closedTrade(e);
+        const before = computeStats(e.history);
+        e.placePending(buyLimit(), 100);
+        e.cancelAllPending(70);
+        expect(computeStats(e.history)).toEqual(before);
+    });
+
+    it('sets and clears labels on open, pending, closed, and logged ones', () => {
+        const e = new SimulationEngine();
+        const done = closedTrade(e, { entry: 101 });
+        const open = e.place(long())!;
+        const pending = e.placePending(buyLimit(), 100)!;
+        const lost = e.placePending(buyLimit({ entry: 94 }), 100)!;
+        e.cancelPending(lost.id, 5);
+        for (const id of [open.id, pending.id, done.id, lost.id]) expect(e.setLabels(id, { tags: ['a'], note: 'n' })).toBe(true);
+        expect(e.openTrades[0]).toEqual(expect.objectContaining({ tags: ['a'], note: 'n' }));
+        expect(e.pendingOrders[0]).toEqual(expect.objectContaining({ tags: ['a'], note: 'n' }));
+        expect(e.history[0]).toEqual(expect.objectContaining({ tags: ['a'], note: 'n' }));
+        expect(e.orderLog[0]).toEqual(expect.objectContaining({ tags: ['a'], note: 'n' }));
+        e.setLabels(done.id, { tags: [], note: '' });
+        expect(e.history[0]).not.toHaveProperty('tags');
+        expect(e.history[0]).not.toHaveProperty('note');
+        expect(e.setLabels('nope', { note: 'x' })).toBe(false);
+    });
+
+    it('announces what leaves the history and the log', () => {
+        const e = new SimulationEngine();
+        const removed: string[][] = [];
+        e.onRemove((ids) => removed.push(ids));
+        const a = closedTrade(e);
+        const p = e.placePending(buyLimit(), 100)!;
+        e.cancelPending(p.id, 5);
+        e.removeFromHistory(a.id);
+        e.removeOrderRecord(p.id);
+        expect(removed).toEqual([[a.id], [p.id]]);
+        closedTrade(e, { entry: 102 });
+        const q = e.placePending(buyLimit(), 100)!;
+        e.cancelPending(q.id, 6);
+        removed.length = 0;
+        e.clearHistory();
+        expect(removed).toHaveLength(1);
+        expect(removed[0]!.length).toBe(2);
+        expect(e.orderLog).toHaveLength(0);
+    });
+
+    it('imports new records, skips ids it has, and keeps the history in closing order', () => {
+        const source = new SimulationEngine();
+        const a = closedTrade(source);
+        const e = new SimulationEngine();
+        const later: SimTrade = { ...a, id: 'z', closeTime: 9_000 };
+        const earlier: SimTrade = { ...a, id: 'y', closeTime: 3_000 };
+        const order = (() => {
+            const p = source.placePending(buyLimit(), 100)!;
+            source.cancelPending(p.id, 5);
+            return source.orderLog[0]!;
+        })();
+        let emits = 0;
+        e.subscribe(() => (emits += 1));
+        expect(e.importRecords({ trades: [later, earlier], orders: [order] })).toEqual({ addedTrades: 2, addedOrders: 1, present: 0 });
+        expect(e.history.map((t) => t.id)).toEqual(['y', 'z']);
+        expect(emits).toBe(1);
+        expect(e.importRecords({ trades: [later, { ...earlier, entry: 999 }], orders: [order] })).toEqual({ addedTrades: 0, addedOrders: 0, present: 3 });
+        expect(e.history.find((t) => t.id === 'y')!.entry).toBe(earlier.entry);
+    });
+
+    it('saves and restores the history with its order log', () => {
+        const e = new SimulationEngine();
+        closedTrade(e, { tags: ['t'], note: 'n' });
+        const p = e.placePending(buyLimit(), 100)!;
+        e.cancelPending(p.id, 5);
+        const fresh = new SimulationEngine();
+        fresh.restoreHistory(JSON.parse(JSON.stringify(e.toJSON())));
+        expect(fresh.history).toEqual(e.history);
+        expect(fresh.orderLog).toEqual(e.orderLog);
+    });
+
+    it('skips a malformed record and still restores a payload with trades only', () => {
+        const e = new SimulationEngine();
+        closedTrade(e);
+        const good = e.toJSON();
+        const fresh = new SimulationEngine();
+        fresh.restoreHistory({ trades: good.trades, orders: [{ id: 'x' }] });
+        expect(fresh.orderLog).toHaveLength(0);
+        expect(fresh.history).toHaveLength(1);
+        const old = new SimulationEngine();
+        old.restoreHistory({ trades: good.trades });
+        expect(old.history).toHaveLength(1);
     });
 });
