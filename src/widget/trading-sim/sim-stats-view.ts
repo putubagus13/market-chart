@@ -19,6 +19,7 @@ import type { SimTrade } from './sim-engine';
 import { computeStats } from './sim-stats';
 import { buildStatsModel, PER_TRADE_BARS, type StatsModel } from './sim-stats-model';
 import type { PipSizes } from './pip-sizes';
+import { parsePositiveNumber } from './parse-number';
 
 const TEXT = {
     scope: msg('widget.sim.scope', 'Statistics for'),
@@ -396,8 +397,8 @@ export class SimStatsView {
         if (text === '') {
             this.pips.set(this.symbol, null);
         } else {
-            const size = /^\d*\.?\d+$/.test(text) ? Number(text) : NaN;
-            if (!this.pips.set(this.symbol, size)) this.ctx.toast(this.ctx.i18n.t(TEXT.pipInvalid), 'error');
+            const size = parsePositiveNumber(text);
+            if (size === null || !this.pips.set(this.symbol, size)) this.ctx.toast(this.ctx.i18n.t(TEXT.pipInvalid), 'error');
         }
         this.paintPip();
     }

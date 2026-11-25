@@ -22,6 +22,11 @@ All notable changes to Vela, newest first.
   best so far with how often trades reached it. The Stats tab draws this as an equity curve, a
   bar per trade, and a drawdown curve, with the win/loss split and the target ratios as bars.
   You can set the pip size per symbol, so pips can count in the unit you trade in.
+  Choose **Limit** to place an order that waits for a price, type the limit price or drag the
+  entry line, and cancel it from the Pending orders list. While a trade runs, tighten its
+  stop by dragging it, typing a price, or moving it to break-even, or let a trailing stop
+  follow the price by a percentage so a profit does not fall back to break-even. Results in
+  R stay measured against the original stop.
 
 ### Changed
 

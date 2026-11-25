@@ -50,15 +50,57 @@ first (the panel offers a **Start bar replay** button).
    and its take profit twice as far, for a 1:2 risk:reward.
 2. Drag the stop and target levels on the chart. The **Order** tab shows the entry, the
    levels, the risk and reward in pips, and the risk:reward live.
-3. Click **Place order**. The order fills at the current close, and the position on the chart
-   locks.
+3. Click **Place order**. A market order fills at the current close.
 4. Play or step the replay. When a revealed bar reaches the stop or the target, the trade
    closes there and a message reports the result. If one bar reaches both, the trade closes at
    the stop: a bar does not show which level came first, and assuming the worse one keeps the
    statistics honest. **Close** on the **Positions** tab exits at the current close.
 
-Moving the replay to another bar, or leaving it, cancels the open trades: they are not
-recorded.
+### Limit orders
+
+Choose **Limit** under Buy and Sell to wait for a price instead of trading at the close. Type
+the **Limit price**, or drag the entry line on the chart: the field and the line follow each
+other. A new limit order starts half an average range from the price, below it for a buy and
+above it for a sell.
+
+The **Type** row names the order from its side and price: a buy below the price (or a sell
+above it) is a **limit** order, and the other side waits for a breakout and is a **stop**
+order. A price equal to the current close is refused: choose **Market** for that.
+
+A placed limit order waits under **Pending orders** on the **Positions** tab, and its position
+on the chart is locked: cancel it with **Cancel order** to change it. It fills at its price when
+a later bar of the replay reaches that price, even if the price gaps past it. The bar that
+fills an order can close it only at its stop, never at its take profit, because a bar does not
+show whether the fill or the take profit came first.
+
+### Adjusting a running trade
+
+Once an order has filled, its position stays on the chart and you can move its
+stop while the trade runs, to cut the risk:
+
+- Drag the stop line on the chart, type a price in the **Stop loss** field on the
+  **Positions** tab, or press **SL → break-even** to move it to the entry.
+- A stop can only move **closer to the price**, and it must stay beyond the current price. A
+  looser stop, or one the price has already reached, is refused with a message and the stop
+  stays. The entry and the take profit cannot be moved: they snap back.
+- The card shows the stop in use and, in brackets, the one the trade started with.
+
+Results in R are always measured against the **original** stop. A trade closed at a stop that
+was moved to break-even is 0R, and one closed at a stop moved into profit is a gain of less
+than 1R, whatever the stop's distance was when it closed.
+
+### Trailing stop
+
+Switch on **Trailing stop** and set a distance in percent of the price, when you place the
+order or later on the **Positions** tab. The stop then follows the best price since the trade
+opened: it rises with a long (falls with a short) and keeps that distance from the best price.
+It never moves away from the price again, so a profit that has built up does not fall back to
+break-even. A trailing stop starts from the stop you set and moves only once it is closer to
+the price than that stop. A bar moves the trail only for the **next** bar: the stop that stood
+before a bar is the one that bar is tested against.
+
+Moving the replay to another bar, or leaving it, cancels the open trades and the pending
+orders: they are not recorded.
 
 ### History and statistics
 
