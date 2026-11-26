@@ -103,6 +103,8 @@
     "test:watch": "vitest",
     "lint": "eslint . && node scripts/lint-css.mjs",
     "playground": "vite",
+    "dev:app": "vite --config vite.app.config.ts",
+    "build:app": "vite build --config vite.app.config.ts",
     "i18n:extract": "node scripts/i18n-extract.mjs",
     "i18n:check": "node scripts/i18n-extract.mjs --check",
     "lint:css": "node scripts/lint-css.mjs",
