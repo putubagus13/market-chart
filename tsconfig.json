@@ -24,6 +24,6 @@
       "@luxalgo/vela-ui/*": ["./packages/vela-ui/src/components/*", "./packages/vela-ui/src/lib/*"]
     }
   },
-  "include": ["src", "test"],
+  "include": ["src", "test", "app"],
   "exclude": ["node_modules", "dist"]
 }
