@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { WatchlistModel, WATCHLIST_MAX, quoteFromDaily, sparklinePath, sparklineArea, signedChange, seedList } from '../src/widget/watchlist/watchlist-model';
+import { WatchlistModel, WATCHLIST_MAX, quoteFromDaily, sparklinePath, sparklineArea, signedChange, seedList, seedVariants } from '../src/widget/watchlist/watchlist-model';
 import { priceDecimals } from '../src/widget/price-decimals';
 
 describe('watchlist model', () => {
@@ -123,7 +123,7 @@ describe('seedList', () => {
     });
 
     it('lists only what a source can serve, and copes with no chart symbol', () => {
-        expect(seedList('', defaults, (s) => s !== 'ETHUSDT')).toEqual(['BTCUSDT', 'SOLUSDT']);
+        expect(seedList('', defaults, (s) => !s.startsWith('ETH'))).toEqual(['BTCUSDT', 'SOLUSDT']); // no form of ETH is served
         expect(seedList('FOO', defaults, (s) => s !== 'FOO')).toEqual(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
         expect(seedList('', defaults, () => false)).toEqual([]);
     });
@@ -142,5 +142,28 @@ describe('sparklineArea', () => {
     it('draws nothing when there is no line to fill', () => {
         expect(sparklineArea([], 60, 20)).toBe('');
         expect(sparklineArea([7], 60, 20)).toBe('');
+    });
+});
+
+describe('seedVariants', () => {
+    it('tries the Binance-style ticker first, then the perpetual, the bare coin and the USD pair', () => {
+        expect(seedVariants('ETHUSDT')).toEqual(['ETHUSDT', 'ETHUSDT.P', 'ETH', 'ETH-USD']);
+    });
+});
+
+describe('seedList with variants', () => {
+    it('lists each default as the first form a source can serve, so a perpetuals-only source still fills the list', () => {
+        const served = new Set(['BTCUSDT.P', 'ETHUSDT.P']);
+        expect(seedList('', ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'], (s) => served.has(s))).toEqual(['BTCUSDT.P', 'ETHUSDT.P']);
+    });
+
+    it('prefers the plain ticker when it is served, and never lists the same coin twice', () => {
+        const served = new Set(['BTCUSDT', 'BTCUSDT.P', 'BTC']);
+        expect(seedList('', ['BTCUSDT'], (s) => served.has(s))).toEqual(['BTCUSDT']);
+    });
+
+    it('does not repeat the chart symbol under another form of the same coin', () => {
+        const served = new Set(['bybit:BTCUSDT.P', 'BTCUSDT.P', 'ETHUSDT.P']);
+        expect(seedList('bybit:BTCUSDT.P', ['BTCUSDT', 'ETHUSDT'], (s) => served.has(s))).toEqual(['bybit:BTCUSDT.P', 'ETHUSDT.P']);
     });
 });

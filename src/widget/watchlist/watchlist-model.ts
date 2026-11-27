@@ -145,12 +145,29 @@ export function signedChange(value: number, format: (abs: number) => string): st
 export const tickerOf = (symbol: string): string => symbol.replace(/^[^:]*:/, '').toUpperCase();
 
 /**
- * A first-run list: the chart's own symbol first, then the `defaults` it does not repeat (compared by ticker, so
- * `binance:BTCUSDT` and `BTCUSDT` count as one), keeping only symbols `listed` says a source can serve.
+ * The forms one default coin can take across the sources, best first: the Binance-style ticker, its perpetual, the bare
+ * coin (Hyperliquid) and the USD pair (Coinbase). `ETHUSDT` gives `ETHUSDT`, `ETHUSDT.P`, `ETH`, `ETH-USD`.
+ */
+export function seedVariants(d: string): string[] {
+    const base = d.replace(/USDT$/i, '');
+    return [...new Set([d, `${d}.P`, base, `${base}-USD`])];
+}
+
+/**
+ * A first-run list: the chart's own symbol first, then each of the `defaults` in the first form (see
+ * {@link seedVariants}) that `listed` says a source can serve, so a source that only lists perpetuals, or bare coins,
+ * still fills the list. A coin is not repeated (compared by ticker, so `binance:BTCUSDT` and `BTCUSDT` count as one).
  */
 export function seedList(current: string, defaults: readonly string[], listed: (symbol: string) => boolean): string[] {
     const first = current !== '' && listed(current) ? [current] : [];
-    const rest = defaults.filter((d) => !(first.length > 0 && tickerOf(d) === tickerOf(current)) && listed(d));
+    const seen = new Set(first.map(tickerOf));
+    const rest: string[] = [];
+    for (const d of defaults) {
+        const pick = seedVariants(d).find((v) => listed(v));
+        if (pick === undefined || seen.has(tickerOf(pick))) continue;
+        seen.add(tickerOf(pick));
+        rest.push(pick);
+    }
     return [...first, ...rest];
 }
 

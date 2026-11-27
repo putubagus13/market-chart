@@ -20,11 +20,12 @@ export function suggestSymbols(list: readonly SymbolDescriptor[], query: string,
 
 const WINDOW = 200;
 /** Quote currencies people most likely mean, best first. */
-const QUOTES = ['USDT', 'USDC', 'USD', 'FDUSD'];
+const QUOTES = ['USDT', 'PERP', 'USDC', 'USD', 'FDUSD'];
 
 /** Lower is better: the exact ticker, then the base coin paired with a favoured quote, then the rest of the prefix matches. */
 function rank(s: SymbolDescriptor, q: string): number {
-    const t = s.ticker.toUpperCase();
+    // a perpetual's `.P` is a marker, not part of the pair: ETHUSDT.P ranks like ETHUSDT
+    const t = s.ticker.toUpperCase().replace(/\.P$/, '');
     if (t === q) return 0;
     if (t.startsWith(q)) {
         const quote = QUOTES.findIndex((c) => t === q + c);

@@ -30,6 +30,12 @@ describe('suggestSymbols', () => {
         expect(suggestSymbols(pairs, 'doge', none).map((s) => s.ticker).slice(0, 3)).toEqual(['DOGE', 'DOGEUSDT', 'DOGEUSDC']);
     });
 
+    it('ranks perpetuals (.P) the same way: the exact coin, then its USDT contract, then the others', () => {
+        const perps = [d('ETHBTCUSDT.P', '', 'bybit'), d('ETHPERP.P', '', 'bybit'), d('ETHUSDT.P', '', 'bybit'), d('ETHFIUSDT.P', '', 'bybit')];
+        expect(suggestSymbols(perps, 'eth', none).map((s) => s.ticker).slice(0, 2)).toEqual(['ETHUSDT.P', 'ETHPERP.P']);
+        expect(suggestSymbols([d('DOGE.P'), d('DOGEBTC.P'), d('DOGEUSDT.P')], 'doge', none).map((s) => s.ticker)).toEqual(['DOGE.P', 'DOGEUSDT.P', 'DOGEBTC.P']);
+    });
+
     it('still finds the USDT pair when many other pairs share the prefix', () => {
         const many = Array.from({ length: 40 }, (_, i) => d(`AB${String(i).padStart(2, '0')}BTC`));
         expect(suggestSymbols([...many, d('ABUSDT')], 'ab', none)[0]!.ticker).toBe('ABUSDT');
