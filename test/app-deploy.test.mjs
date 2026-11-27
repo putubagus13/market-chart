@@ -35,6 +35,18 @@ describe('the static ChartLab build', () => {
         expect(html).toContain('name="theme-color"');
     });
 
+    it('has a share image on the app domain that the build really contains', () => {
+        const html = readFileSync(join(out, 'index.html'), 'utf8');
+        const image = /<meta property="og:image" content="([^"]+)"/.exec(html)?.[1] ?? '';
+        // Link previews need an absolute URL; the same file is served from every domain the app answers on.
+        expect(image).toBe('https://app.disatu.xyz/og-image.png');
+        expect(html).toContain('<meta name="twitter:card" content="summary_large_image"');
+        const file = readFileSync(join(out, new URL(image).pathname));
+        // PNG header, then width and height of the IHDR chunk: the size link previews expect.
+        expect(file.subarray(1, 4).toString()).toBe('PNG');
+        expect([file.readUInt32BE(16), file.readUInt32BE(20)]).toEqual([1200, 630]);
+    });
+
     it('has a web manifest whose icons all exist', () => {
         const manifest = JSON.parse(readFileSync(join(out, 'site.webmanifest'), 'utf8'));
         expect(manifest.name).toBe('ChartLab');
