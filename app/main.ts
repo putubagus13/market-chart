@@ -5,7 +5,7 @@ import { resolveTheme } from '../src/core/theme';
 import { localStorageAdapter } from '../src/widget';
 import indonesian from '../src/locales/id';
 import { VelaWorkspace } from '../src/workspace';
-import { buildWorkspaceOptions } from './config';
+import { buildWorkspaceOptions, takeWatchlistDefault } from './config';
 import { sanitizingStorage } from './saved-state';
 import { isAllowedParent, parseParentMessage, readEmbedParams } from './embed';
 import { blockedNotice, pickSource, probeSources } from './source';
@@ -20,7 +20,9 @@ const source = pickSource(reachable);
 // What was saved on an earlier visit must not overrule this one: a symbol from a source that is blocked
 // today, or colours from the other theme (see saved-state.ts).
 const storage = sanitizingStorage(localStorageAdapter(), { themeBackground: resolveTheme(params.theme).background, reachable, fallback: source });
-const ws = new VelaWorkspace('#chart', { ...buildWorkspaceOptions(params, source ?? undefined), storage });
+// The watchlist starts open the first time on a screen wide enough for it (see takeWatchlistDefault).
+const openWatchlist = takeWatchlistDefault({ getItem: (k) => localStorage.getItem(k), setItem: (k, v) => localStorage.setItem(k, v) }, matchMedia('(min-width: 900px)').matches);
+const ws = new VelaWorkspace('#chart', { ...buildWorkspaceOptions(params, source ?? undefined, { openWatchlist }), storage });
 if (!source) {
     const note = document.createElement('div');
     note.setAttribute('role', 'status');
