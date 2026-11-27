@@ -43,6 +43,7 @@ describe('vercel.json', () => {
         expect(csp).toContain('frame-ancestors');
         expect(csp).toContain('http://localhost:3000');
         expect(csp).toContain('https://*.vercel.app');
+        expect(csp).toContain('https://chartlab.disatu.xyz');
         const all = vercel.headers.flatMap((h) => h.headers.map((x) => x.key.toLowerCase()));
         expect(all).not.toContain('x-frame-options');
     });

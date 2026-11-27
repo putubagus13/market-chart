@@ -42,6 +42,13 @@ describe('isAllowedParent', () => {
         expect(isAllowedParent('https://disatu-landing.vercel.app')).toBe(true);
     });
 
+    it('allows the ChartLab landing on its own domain, and nothing else on that domain', () => {
+        expect(isAllowedParent('https://chartlab.disatu.xyz')).toBe(true);
+        for (const origin of ['http://chartlab.disatu.xyz', 'https://disatu.xyz', 'https://evil.chartlab.disatu.xyz', 'https://chartlab.disatu.xyz.evil.com']) {
+            expect(isAllowedParent(origin), origin).toBe(false);
+        }
+    });
+
     it('rejects look-alike and malformed origins', () => {
         for (const origin of ['https://evil.example', 'https://evilvercel.app', 'http://localhost:3000.evil.com', 'http://disatu-landing.vercel.app', 'null', '']) {
             expect(isAllowedParent(origin), origin).toBe(false);

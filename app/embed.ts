@@ -10,7 +10,7 @@ export const SUPPORTED_LANGS: readonly ChartLang[] = ['id', 'en'];
  * Origins allowed to embed the app and to send it messages. A leading `*.` matches any
  * sub-domain (dot boundary, same scheme). Keep in step with `frame-ancestors` in vercel.json.
  */
-export const ALLOWED_PARENTS: readonly string[] = ['http://localhost:3000', 'https://*.vercel.app'];
+export const ALLOWED_PARENTS: readonly string[] = ['http://localhost:3000', 'https://*.vercel.app', 'https://chartlab.disatu.xyz'];
 
 export interface EmbedParams {
     theme: ChartTheme;
