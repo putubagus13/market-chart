@@ -114,6 +114,13 @@ export interface VelaWorkspaceOptions extends Omit<VelaOptions, 'height'>, VelaS
      *  dormant in the pool). No `cells` entry is needed — the top-level chart
      *  options seed the single chart. */
     layout?: string | LayoutDefinition | false;
+    /** The side panel to open at boot (a built-in id such as `'objects'`, or a registered panel's id such as
+     *  `'vela.watchlist'`). It replaces the panel a saved document had open, and keeps the widths and pins the
+     *  user set. An id no panel has leaves the dock as it was. Default: none. */
+    openPanel?: string;
+    /** The quick-switch timeframe chips in the topbar, as chart timeframe values (`'5'`, `'60'`, `'D'`…), until
+     *  the user stars their own: a saved set wins over this default. Default: none. */
+    timeframeFavorites?: string[];
     /** Per-cell overrides of the top-level chart defaults, keyed by a FREE-FORM cell
      *  name — the name is the cell's durable IDENTITY (persistence, `sync` groups,
      *  `ws.cell(name)`), never its position: DECLARATION ORDER fills the layout's
@@ -637,7 +644,7 @@ export class VelaWorkspace {
         }
         this.timezone = boot?.timezone ?? opts.timezone ?? 'Etc/UTC';
         if (boot?.favorites) this.favs = [...boot.favorites];
-        if (boot?.timeframeFavorites) this.tfFavs = [...boot.timeframeFavorites];
+        this.tfFavs = [...(boot?.timeframeFavorites ?? opts.timeframeFavorites ?? [])]; // the saved set wins over the host's default
         if (boot?.drawingTools) this.adoptDrawingTools(boot.drawingTools);
         const sync = boot?.sync ?? opts.sync;
         for (const kind of SYNC_KINDS) this.applySyncSetting(kind, sync?.[kind]);
@@ -830,7 +837,10 @@ export class VelaWorkspace {
         // The dock's own slice of the boot document (open panel, dragged widths, pinned
         // placements) — the sync-storage twin of what `applyState` does for a late document.
         // Panels that are not registered yet keep their entry until they dock.
-        if (boot?.panels) this.dock.applyState(boot.panels);
+        // `openPanel` is the host's choice for this boot: it replaces the open panel a saved document recorded,
+        // while the widths and pins the user set are kept.
+        if (opts.openPanel) this.dock.applyState({ ...boot?.panels, open: opts.openPanel });
+        else if (boot?.panels) this.dock.applyState(boot.panels);
         this.root.appendChild(main);
         this.placeToolbar();
         // Docked strips (`ctx.dockStrip`) — before the bottom bar, which appends itself next.
