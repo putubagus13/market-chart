@@ -3,7 +3,7 @@
 // app checks which source it can reach before it boots. Pure apart from the injected fetch.
 import type { ChartLang } from './embed';
 
-export type SourceId = 'binance' | 'hyperliquid' | 'coinbase';
+export type SourceId = 'binance' | 'hyperliquid' | 'coinbase' | 'bybit';
 
 export interface Source {
     id: SourceId;
@@ -26,6 +26,8 @@ export const SOURCES: readonly Source[] = [
     DEFAULT_SOURCE,
     { id: 'hyperliquid', symbol: 'hyperliquid:BTC', probes: ['https://api.hyperliquid.xyz/info'] },
     { id: 'coinbase', symbol: 'coinbase:BTC-USD', probes: ['https://api.exchange.coinbase.com/time'] },
+    // Bybit's three hosts (see BybitProvider): the global host, its alias, and the Netherlands host that stays reachable where the others are blocked
+    { id: 'bybit', symbol: 'bybit:BTCUSDT.P', probes: ['https://api.bybit.com/v5/market/time', 'https://api.bytick.com/v5/market/time', 'https://api.bybit.nl/v5/market/time'] },
 ];
 
 export type Reachability = Record<SourceId, boolean>;

@@ -2,24 +2,26 @@ import { describe, expect, it, vi } from 'vitest';
 import { SOURCES, blockedNotice, pickSource, probeSources } from '../app/source';
 
 describe('SOURCES', () => {
-    it('prefers Binance, then Hyperliquid, then Coinbase, each with a symbol that provider serves', () => {
+    it('prefers Binance, then Hyperliquid, Coinbase and Bybit, each with a symbol that provider serves', () => {
         expect(SOURCES.map((s) => [s.id, s.symbol])).toEqual([
             ['binance', 'binance:BTCUSDT'],
             ['hyperliquid', 'hyperliquid:BTC'],
             ['coinbase', 'coinbase:BTC-USD'],
+            ['bybit', 'bybit:BTCUSDT.P'],
         ]);
     });
 });
 
 describe('pickSource', () => {
     it('takes the first reachable source in order of preference', () => {
-        expect(pickSource({ binance: true, hyperliquid: true, coinbase: true })?.id).toBe('binance');
-        expect(pickSource({ binance: false, hyperliquid: true, coinbase: true })?.id).toBe('hyperliquid');
-        expect(pickSource({ binance: false, hyperliquid: false, coinbase: true })?.id).toBe('coinbase');
+        expect(pickSource({ binance: true, hyperliquid: true, coinbase: true, bybit: false })?.id).toBe('binance');
+        expect(pickSource({ binance: false, hyperliquid: true, coinbase: true, bybit: false })?.id).toBe('hyperliquid');
+        expect(pickSource({ binance: false, hyperliquid: false, coinbase: true, bybit: false })?.id).toBe('coinbase');
+        expect(pickSource({ binance: false, hyperliquid: false, coinbase: false, bybit: true })?.id).toBe('bybit');
     });
 
     it('is null when nothing is reachable', () => {
-        expect(pickSource({ binance: false, hyperliquid: false, coinbase: false })).toBeNull();
+        expect(pickSource({ binance: false, hyperliquid: false, coinbase: false, bybit: false })).toBeNull();
     });
 });
 
@@ -27,22 +29,28 @@ describe('probeSources', () => {
     it('probes every source at once, with no-cors so it only tests that the host is reachable', async () => {
         const fetchFn = vi.fn((url: string, _init?: { mode?: string }) => (url.includes('hyperliquid') ? Promise.resolve({}) : Promise.reject(new TypeError('blocked'))));
         const result = await probeSources(fetchFn as never, 1000);
-        expect(result).toEqual({ binance: false, hyperliquid: true, coinbase: false });
-        expect(fetchFn).toHaveBeenCalledTimes(4); // Binance has two hosts (primary and mirror)
+        expect(result).toEqual({ binance: false, hyperliquid: true, coinbase: false, bybit: false });
+        expect(fetchFn).toHaveBeenCalledTimes(7); // Binance has two hosts, Bybit three
         for (const call of fetchFn.mock.calls) expect(call[1]?.mode).toBe('no-cors');
     });
 
     it('counts Binance as reachable when only its market-data mirror answers', async () => {
         const fetchFn = vi.fn((url: string) => (url.includes('data-api.binance.vision') ? Promise.resolve({}) : Promise.reject(new TypeError('blocked'))));
         const result = await probeSources(fetchFn as never, 1000);
-        expect(result).toEqual({ binance: true, hyperliquid: false, coinbase: false });
+        expect(result).toEqual({ binance: true, hyperliquid: false, coinbase: false, bybit: false });
+    });
+
+    it('counts Bybit as reachable when only its Netherlands host answers', async () => {
+        const fetchFn = vi.fn((url: string) => (url.includes('api.bybit.nl') ? Promise.resolve({}) : Promise.reject(new TypeError('blocked'))));
+        const result = await probeSources(fetchFn as never, 1000);
+        expect(result).toEqual({ binance: false, hyperliquid: false, coinbase: false, bybit: true });
     });
 
     it('counts a source that never answers as unreachable once the timeout passes', async () => {
         const never = () => new Promise<never>(() => undefined);
         const started = Date.now();
         const result = await probeSources(never as never, 30);
-        expect(result).toEqual({ binance: false, hyperliquid: false, coinbase: false });
+        expect(result).toEqual({ binance: false, hyperliquid: false, coinbase: false, bybit: false });
         expect(Date.now() - started).toBeLessThan(500);
     });
 });

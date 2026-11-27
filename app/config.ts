@@ -3,6 +3,7 @@
 // reachable. Pure: it only builds the options.
 import type { VelaWorkspaceOptions } from '../src/workspace';
 import { BinanceProvider } from '../src/data/providers/binance';
+import { BybitProvider } from '../src/data/providers/bybit';
 import { CoinbaseProvider } from '../src/data/providers/coinbase';
 import { HyperliquidProvider } from '../src/data/providers/hyperliquid';
 import type { EmbedParams } from './embed';
@@ -44,11 +45,12 @@ export function buildWorkspaceOptions(p: EmbedParams, source: Source = DEFAULT_S
         theme: p.theme,
         locale: p.lang,
         providers: {
-            // All three are registered, so the symbol picker can search any of them; `source` only
+            // All four are registered, so the symbol picker can search any of them; `source` only
             // decides which one the chart opens on.
             binance: () => new BinanceProvider(),
             hyperliquid: () => new HyperliquidProvider(),
             coinbase: () => new CoinbaseProvider(),
+            bybit: () => new BybitProvider(),
         },
         persist: 'chartlab', // its own localStorage key
         // Inside the landing's iframe the chart must not pull focus away from the host page.

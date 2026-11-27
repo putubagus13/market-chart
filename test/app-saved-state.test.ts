@@ -3,8 +3,8 @@ import { sanitizeSavedState, sanitizingStorage } from '../app/saved-state';
 import { SOURCES, type Reachability } from '../app/source';
 
 const HYPERLIQUID = SOURCES[1]!;
-const allUp: Reachability = { binance: true, hyperliquid: true, coinbase: true };
-const binanceBlocked: Reachability = { binance: false, hyperliquid: true, coinbase: false };
+const allUp: Reachability = { binance: true, hyperliquid: true, coinbase: true, bybit: true };
+const binanceBlocked: Reachability = { binance: false, hyperliquid: true, coinbase: false, bybit: false };
 const LIGHT = '#ffffff';
 
 /** A saved workspace document the way VelaWorkspace writes it, one chart saved on the dark theme. */
@@ -60,7 +60,7 @@ describe('sanitizeSavedState: a saved symbol from a blocked source must not stra
     });
 
     it('has nowhere to move it when nothing is reachable, so it leaves the chart as saved', () => {
-        const c = chart(sanitizeSavedState(saved(), { ...ctx, fallback: null, reachable: { binance: false, hyperliquid: false, coinbase: false } }));
+        const c = chart(sanitizeSavedState(saved(), { ...ctx, fallback: null, reachable: { binance: false, hyperliquid: false, coinbase: false, bybit: false } }));
         expect(c).toMatchObject({ symbol: 'binance:BTCUSDT', provider: 'binance' });
     });
 

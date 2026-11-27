@@ -15,8 +15,8 @@ describe('buildWorkspaceOptions', () => {
         expect(o.live).toBe(true);
     });
 
-    it('registers all three data sources, so the picker can search any of them', () => {
-        expect(Object.keys(buildWorkspaceOptions(embedded).providers ?? {})).toEqual(['binance', 'hyperliquid', 'coinbase']);
+    it('registers all four data sources, so the picker can search any of them', () => {
+        expect(Object.keys(buildWorkspaceOptions(embedded).providers ?? {})).toEqual(['binance', 'hyperliquid', 'coinbase', 'bybit']);
     });
 
     it('opens on the symbol of the source it was told to use, Binance by default', () => {
