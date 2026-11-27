@@ -9,6 +9,9 @@ import { HyperliquidProvider } from '../src/data/providers/hyperliquid';
 import type { EmbedParams } from './embed';
 import { DEFAULT_SOURCE, type Source } from './source';
 
+/** The localStorage key the workspace saves itself under: its own, not the playground's. */
+export const PERSIST_KEY = 'chartlab';
+
 /** The watchlist's id in the side-panel dock. */
 export const WATCHLIST_PANEL = 'vela.watchlist';
 
@@ -52,7 +55,7 @@ export function buildWorkspaceOptions(p: EmbedParams, source: Source = DEFAULT_S
             coinbase: () => new CoinbaseProvider(),
             bybit: () => new BybitProvider(),
         },
-        persist: 'chartlab', // its own localStorage key
+        persist: PERSIST_KEY, // its own localStorage key
         // Inside the landing's iframe the chart must not pull focus away from the host page.
         autofocus: !p.embedded,
         settings: { hidden: ['advanced'] },

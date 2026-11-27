@@ -5,21 +5,38 @@ import { resolveTheme } from '../src/core/theme';
 import { localStorageAdapter } from '../src/widget';
 import indonesian from '../src/locales/id';
 import { VelaWorkspace } from '../src/workspace';
-import { buildWorkspaceOptions, takeWatchlistDefault } from './config';
-import { sanitizingStorage } from './saved-state';
+import { PERSIST_KEY, buildWorkspaceOptions, takeWatchlistDefault } from './config';
+import { sanitizingStorage, savedTheme } from './saved-state';
 import { isAllowedParent, parseParentMessage, readEmbedParams } from './embed';
 import { blockedNotice, pickSource, probeSources } from './source';
 
 registerLocale(indonesian); // English is built in; the switch from the parent may ask for Indonesian
 
-const params = readEmbedParams(location.search, matchMedia('(prefers-color-scheme: dark)').matches);
+// A visit that names no theme (a bookmark, a typed address) follows the theme the chart was last used in, not the
+// operating system's, so it looks the same here as it did in the landing's iframe. An explicit ?theme= still wins.
+const backgrounds = { dark: resolveTheme('dark').background, light: resolveTheme('light').background };
+const backgroundOf = (t: 'dark' | 'light'): string => backgrounds[t];
+const lastTheme = (() => {
+    try {
+        const raw = localStorageAdapter().get(PERSIST_KEY);
+        return typeof raw === 'string' ? savedTheme(raw, backgrounds) : null;
+    } catch {
+        return null; // storage blocked: nothing saved to follow
+    }
+})();
+const params = readEmbedParams(location.search, lastTheme ? lastTheme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches);
 
 // Start on a data source this network can reach (a few seconds at most); say so if none is.
 const reachable = await probeSources();
 const source = pickSource(reachable);
 // What was saved on an earlier visit must not overrule this one: a symbol from a source that is blocked
 // today, or colours from the other theme (see saved-state.ts).
-const storage = sanitizingStorage(localStorageAdapter(), { themeBackground: resolveTheme(params.theme).background, reachable, fallback: source });
+const storage = sanitizingStorage(localStorageAdapter(), {
+    themeBackground: backgroundOf(params.theme),
+    otherThemeBackground: backgroundOf(params.theme === 'dark' ? 'light' : 'dark'),
+    reachable,
+    fallback: source,
+});
 // The watchlist starts open the first time on a screen wide enough for it (see takeWatchlistDefault).
 const openWatchlist = takeWatchlistDefault({ getItem: (k) => localStorage.getItem(k), setItem: (k, v) => localStorage.setItem(k, v) }, matchMedia('(min-width: 900px)').matches);
 const ws = new VelaWorkspace('#chart', { ...buildWorkspaceOptions(params, source ?? undefined, { openWatchlist }), storage });

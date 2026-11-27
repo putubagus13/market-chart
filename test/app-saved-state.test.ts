@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeSavedState, sanitizingStorage } from '../app/saved-state';
+import { sanitizeSavedState, sanitizingStorage, savedTheme } from '../app/saved-state';
 import { SOURCES, type Reachability } from '../app/source';
 
 const HYPERLIQUID = SOURCES[1]!;
 const allUp: Reachability = { binance: true, hyperliquid: true, coinbase: true, bybit: true };
 const binanceBlocked: Reachability = { binance: false, hyperliquid: true, coinbase: false, bybit: false };
 const LIGHT = '#ffffff';
+const DARK = '#151619';
 
 /** A saved workspace document the way VelaWorkspace writes it, one chart saved on the dark theme. */
 const saved = (over: Record<string, unknown> = {}) =>
@@ -30,24 +31,30 @@ const chart = (raw: string, i = 0) => (JSON.parse(raw) as { charts: Record<strin
 
 describe('sanitizeSavedState: the theme asked for wins over the one saved', () => {
     it('drops the saved renderer colours when they belong to another theme, and keeps everything else', () => {
-        const c = chart(sanitizeSavedState(saved(), { themeBackground: LIGHT, reachable: allUp, fallback: null }));
+        const c = chart(sanitizeSavedState(saved(), { themeBackground: LIGHT, otherThemeBackground: DARK, reachable: allUp, fallback: null }));
         expect(c.rendererConfig).toBeUndefined();
         expect(c).toMatchObject({ id: 'c1', timeframe: '240', priceStyle: 'candles', drawings: [{ kind: 'line' }], indicators: [{ id: 'ema' }] });
     });
 
     it('keeps the saved renderer settings when they already match the requested theme', () => {
-        const c = chart(sanitizeSavedState(saved(), { themeBackground: '#151619', reachable: allUp, fallback: null }));
+        const c = chart(sanitizeSavedState(saved(), { themeBackground: DARK, otherThemeBackground: LIGHT, reachable: allUp, fallback: null }));
         expect(c.rendererConfig).toBeDefined();
     });
 
+    it('keeps colours the user chose themselves: a background that belongs to neither built-in theme is a customisation, not a stale theme', () => {
+        const custom = saved({ rendererConfig: { version: 1, layout: { background: '#0b1d2a', textColor: '#ffffff' }, candles: { upColor: '#00ff88' } } });
+        const c = chart(sanitizeSavedState(custom, { themeBackground: LIGHT, otherThemeBackground: DARK, reachable: allUp, fallback: null }));
+        expect(c.rendererConfig).toMatchObject({ layout: { background: '#0b1d2a' }, candles: { upColor: '#00ff88' } });
+    });
+
     it('compares colours without caring about letter case', () => {
-        const c = chart(sanitizeSavedState(saved(), { themeBackground: '#151619'.toUpperCase(), reachable: allUp, fallback: null }));
+        const c = chart(sanitizeSavedState(saved(), { themeBackground: DARK.toUpperCase(), otherThemeBackground: LIGHT, reachable: allUp, fallback: null }));
         expect(c.rendererConfig).toBeDefined();
     });
 });
 
 describe('sanitizeSavedState: a saved symbol from a blocked source must not strand the chart', () => {
-    const ctx = { themeBackground: '#151619', reachable: binanceBlocked, fallback: HYPERLIQUID };
+    const ctx = { themeBackground: DARK, otherThemeBackground: LIGHT, reachable: binanceBlocked, fallback: HYPERLIQUID };
 
     it('moves a chart whose source is unreachable to the source that works, keeping its timeframe', () => {
         const c = chart(sanitizeSavedState(saved(), ctx));
@@ -79,14 +86,14 @@ describe('sanitizeSavedState: a saved symbol from a blocked source must not stra
 });
 
 describe('sanitizeSavedState: input it cannot read is passed through untouched', () => {
-    const ctx = { themeBackground: LIGHT, reachable: binanceBlocked, fallback: HYPERLIQUID };
+    const ctx = { themeBackground: LIGHT, otherThemeBackground: DARK, reachable: binanceBlocked, fallback: HYPERLIQUID };
     it.each(['', 'not json', '[]', '{"version":1}', '{"charts":"nope"}', 'null'])('%j', (raw) => {
         expect(sanitizeSavedState(raw, ctx)).toBe(raw);
     });
 });
 
 describe('sanitizingStorage', () => {
-    const ctx = { themeBackground: LIGHT, reachable: binanceBlocked, fallback: HYPERLIQUID };
+    const ctx = { themeBackground: LIGHT, otherThemeBackground: DARK, reachable: binanceBlocked, fallback: HYPERLIQUID };
 
     it('sanitizes what the workspace reads and leaves what it writes alone', () => {
         const writes: [string, string][] = [];
@@ -102,5 +109,22 @@ describe('sanitizingStorage', () => {
         const asyncStore = sanitizingStorage({ get: () => Promise.resolve(saved()), set: () => undefined }, ctx);
         expect(chart((await asyncStore.get('k')) as string).provider).toBe('hyperliquid');
         expect(sanitizingStorage({ get: () => null, set: () => undefined }, ctx).get('k')).toBeNull();
+    });
+});
+
+describe('savedTheme: the theme the chart was last used in', () => {
+    const backgrounds = { dark: DARK, light: LIGHT };
+
+    it('reads it from the saved chart colours', () => {
+        expect(savedTheme(saved(), backgrounds)).toBe('dark');
+        expect(savedTheme(saved({ rendererConfig: { layout: { background: LIGHT.toUpperCase() } } }), backgrounds)).toBe('light');
+    });
+
+    it('says nothing when the colours are the visitor\'s own, or there is nothing usable saved', () => {
+        expect(savedTheme(saved({ rendererConfig: { layout: { background: '#0b1d2a' } } }), backgrounds)).toBeNull();
+        expect(savedTheme(saved({ rendererConfig: undefined }), backgrounds)).toBeNull();
+        expect(savedTheme('not json', backgrounds)).toBeNull();
+        expect(savedTheme(JSON.stringify({ charts: [] }), backgrounds)).toBeNull();
+        expect(savedTheme(null, backgrounds)).toBeNull();
     });
 });
