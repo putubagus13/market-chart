@@ -112,3 +112,55 @@ export function quoteFromDaily(bars: ReadonlyArray<{ close: number }>): Quote | 
     const change = last - prev;
     return { last, change, changePercent: prev !== 0 ? (change / prev) * 100 : 0 };
 }
+
+/**
+ * The `d` of an SVG path drawing `values` as a line in a `width` x `height` box: one point per finite value,
+ * left to right, the lowest at the bottom and the highest at the top, `pad` px in from every edge. Fewer than
+ * two usable values give '' (nothing to draw); a flat series draws through the middle.
+ */
+export function sparklinePath(values: readonly number[], width: number, height: number, pad = 1): string {
+    const v = values.filter(Number.isFinite);
+    if (v.length < 2) return '';
+    const min = Math.min(...v);
+    const range = Math.max(...v) - min;
+    const innerW = width - pad * 2;
+    const innerH = height - pad * 2;
+    const round = (n: number): number => Math.round(n * 100) / 100;
+    return v
+        .map((value, i) => {
+            const x = pad + (innerW * i) / (v.length - 1);
+            const y = range === 0 ? height / 2 : pad + innerH * (1 - (value - min) / range);
+            return `${i === 0 ? 'M' : 'L'}${round(x)} ${round(y)}`;
+        })
+        .join('');
+}
+
+/** `value` formatted by `format`, with an explicit sign: "+" for a rise, "-" for a fall (the same "-" the percent formatter writes). */
+export function signedChange(value: number, format: (abs: number) => string): string {
+    if (value > 0) return `+${format(value)}`;
+    if (value < 0) return `-${format(-value)}`;
+    return format(0);
+}
+
+export const tickerOf = (symbol: string): string => symbol.replace(/^[^:]*:/, '').toUpperCase();
+
+/**
+ * A first-run list: the chart's own symbol first, then the `defaults` it does not repeat (compared by ticker, so
+ * `binance:BTCUSDT` and `BTCUSDT` count as one), keeping only symbols `listed` says a source can serve.
+ */
+export function seedList(current: string, defaults: readonly string[], listed: (symbol: string) => boolean): string[] {
+    const first = current !== '' && listed(current) ? [current] : [];
+    const rest = defaults.filter((d) => !(first.length > 0 && tickerOf(d) === tickerOf(current)) && listed(d));
+    return [...first, ...rest];
+}
+
+/**
+ * The `d` of the filled shape under {@link sparklinePath}: the same line, then down to the bottom edge under its
+ * last point and back under its first, closed. '' when there is no line.
+ */
+export function sparklineArea(values: readonly number[], width: number, height: number, pad = 1): string {
+    const line = sparklinePath(values, width, height, pad);
+    if (line === '') return '';
+    const bottom = Math.round((height - pad) * 100) / 100;
+    return `${line}L${Math.round((width - pad) * 100) / 100} ${bottom}L${pad} ${bottom}Z`;
+}
