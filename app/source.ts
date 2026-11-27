@@ -10,21 +10,22 @@ export interface Source {
     /** A pinned symbol (`provider:ticker`) that provider serves. */
     symbol: string;
     /**
-     * A host the source needs; only its reachability matters, not the status. Hyperliquid's API host
-     * answers a plain GET with 405 (every endpoint is POST + JSON, which no-cors cannot send); that is
-     * fine, because the fetch still settles. Browsers log the 405 in the console; it is expected.
+     * Hosts the source can be reached on; it counts as reachable when ANY answers, and only reachability
+     * matters, not the status. Hyperliquid's API host answers a plain GET with 405 (every endpoint is
+     * POST + JSON, which no-cors cannot send); that is fine, because the fetch still settles. Browsers log
+     * the 405 in the console; it is expected.
      */
-    probe: string;
+    probes: readonly string[];
 }
 
 /** The preferred source, and what the chart opens on when we cannot tell which one works. */
-export const DEFAULT_SOURCE: Source = { id: 'binance', symbol: 'binance:BTCUSDT', probe: 'https://api.binance.com/api/v3/ping' };
+export const DEFAULT_SOURCE: Source = { id: 'binance', symbol: 'binance:BTCUSDT', probes: ['https://api.binance.com/api/v3/ping', 'https://data-api.binance.vision/api/v3/ping'] };
 
 /** In order of preference. */
 export const SOURCES: readonly Source[] = [
     DEFAULT_SOURCE,
-    { id: 'hyperliquid', symbol: 'hyperliquid:BTC', probe: 'https://api.hyperliquid.xyz/info' },
-    { id: 'coinbase', symbol: 'coinbase:BTC-USD', probe: 'https://api.exchange.coinbase.com/time' },
+    { id: 'hyperliquid', symbol: 'hyperliquid:BTC', probes: ['https://api.hyperliquid.xyz/info'] },
+    { id: 'coinbase', symbol: 'coinbase:BTC-USD', probes: ['https://api.exchange.coinbase.com/time'] },
 ];
 
 export type Reachability = Record<SourceId, boolean>;
@@ -52,10 +53,22 @@ export async function probeSources(fetchFn: FetchLike = fetch as FetchLike, time
                     resolve(false);
                 }, timeoutMs);
             });
-            const answer = fetchFn(s.probe, { mode: 'no-cors', signal: abort.signal }).then(
-                () => true,
-                () => false,
+            const answers = s.probes.map((url) =>
+                fetchFn(url, { mode: 'no-cors', signal: abort.signal }).then(
+                    () => true,
+                    () => false,
+                ),
             );
+            // Reachable as soon as one host answers; unreachable once every host has failed.
+            const answer = new Promise<boolean>((resolve) => {
+                let failed = 0;
+                for (const a of answers) {
+                    void a.then((ok) => {
+                        if (ok) resolve(true);
+                        else if (++failed === answers.length) resolve(false);
+                    });
+                }
+            });
             const ok = await Promise.race([answer, timeout]);
             clearTimeout(timer);
             return [s.id, ok] as const;

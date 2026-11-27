@@ -158,7 +158,7 @@ describe('BinanceProvider — pagination, fallback, enumeration (stubbed fetch)'
         expect(bars[0]!.time).toBeLessThan(bars[bars.length - 1]!.time); // merged + sorted ascending
     });
 
-    it('falls back from api.binance.com to api.binance.us when the primary is unreachable', async () => {
+    it('falls back from api.binance.com to the market-data mirror (same markets) when the primary is unreachable', async () => {
         const calls: string[] = [];
         vi.stubGlobal('fetch', vi.fn((input: string | URL) => {
             const url = input.toString();
@@ -170,7 +170,38 @@ describe('BinanceProvider — pagination, fallback, enumeration (stubbed fetch)'
         }));
 
         await new BinanceProvider().getBars('BTCUSDT', '1h', { limit: 1 });
+        expect(calls.some((u) => u.includes('data-api.binance.vision') && u.includes('/klines'))).toBe(true);
+        // The US exchange lists different markets: it is the last resort, never preferred over the mirror.
+        expect(calls.some((u) => u.includes('api.binance.us') && u.includes('/klines'))).toBe(false);
+    });
+
+    it('uses api.binance.us only when both the primary and the mirror are unreachable', async () => {
+        const calls: string[] = [];
+        vi.stubGlobal('fetch', vi.fn((input: string | URL) => {
+            const url = input.toString();
+            calls.push(url);
+            if ((url.includes('api.binance.com') || url.includes('binance.vision')) && url.includes('/ping')) return Promise.reject(new Error('unreachable'));
+            if (url.includes('/ping')) return Promise.resolve(res(true, {}));
+            if (url.includes('/klines')) return Promise.resolve(res(true, [[0, '1', '2', '0', '1', '1', 1]]));
+            return Promise.resolve(res(false, {}));
+        }));
+
+        await new BinanceProvider().getBars('BTCUSDT', '1h', { limit: 1 });
         expect(calls.some((u) => u.includes('api.binance.us') && u.includes('/klines'))).toBe(true);
+    });
+
+    it('prefers the primary over the mirror, and never pings the US exchange while either works', async () => {
+        const calls: string[] = [];
+        vi.stubGlobal('fetch', vi.fn((input: string | URL) => {
+            const url = input.toString();
+            calls.push(url);
+            if (url.includes('/ping')) return Promise.resolve(res(true, {}));
+            if (url.includes('/klines')) return Promise.resolve(res(true, [[0, '1', '2', '0', '1', '1', 1]]));
+            return Promise.resolve(res(false, {}));
+        }));
+        await new BinanceProvider().getBars('BTCUSDT', '1h', { limit: 1 });
+        expect(calls.some((u) => u.includes('api.binance.com') && u.includes('/klines'))).toBe(true);
+        expect(calls.some((u) => u.includes('binance.us'))).toBe(false);
     });
 
     it('listSymbols enumerates spot (TRADING only) + perpetual futures (.P)', async () => {
@@ -314,6 +345,21 @@ describe('BinanceProvider.subscribe', () => {
         await vi.waitFor(() => expect(FakeWS.instances.length).toBe(1));
         expect(FakeWS.instances[0]!.url).toContain('stream.binance.com:9443');
         expect(FakeWS.instances[0]!.url).toContain('btcusdt@kline_1h');
+        unsub();
+    });
+
+    it('spot stream uses the market-data mirror socket when the REST mirror is the reachable endpoint', async () => {
+        const FakeWS = makeFakeWS();
+        vi.stubGlobal('WebSocket', FakeWS);
+        vi.stubGlobal('fetch', vi.fn((input: string | URL) => {
+            const url = input.toString();
+            if (url.includes('api.binance.com') && url.includes('/ping')) return Promise.reject(new Error('unreachable'));
+            if (url.includes('/ping')) return Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as unknown as Response);
+            return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as unknown as Response);
+        }));
+        const unsub = new BinanceProvider().subscribe('BTCUSDT', '1h', () => {});
+        await vi.waitFor(() => expect(FakeWS.instances.length).toBe(1));
+        expect(FakeWS.instances[0]!.url).toContain('data-stream.binance.vision');
         unsub();
     });
 

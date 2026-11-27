@@ -28,8 +28,14 @@ describe('probeSources', () => {
         const fetchFn = vi.fn((url: string, _init?: { mode?: string }) => (url.includes('hyperliquid') ? Promise.resolve({}) : Promise.reject(new TypeError('blocked'))));
         const result = await probeSources(fetchFn as never, 1000);
         expect(result).toEqual({ binance: false, hyperliquid: true, coinbase: false });
-        expect(fetchFn).toHaveBeenCalledTimes(3);
+        expect(fetchFn).toHaveBeenCalledTimes(4); // Binance has two hosts (primary and mirror)
         for (const call of fetchFn.mock.calls) expect(call[1]?.mode).toBe('no-cors');
+    });
+
+    it('counts Binance as reachable when only its market-data mirror answers', async () => {
+        const fetchFn = vi.fn((url: string) => (url.includes('data-api.binance.vision') ? Promise.resolve({}) : Promise.reject(new TypeError('blocked'))));
+        const result = await probeSources(fetchFn as never, 1000);
+        expect(result).toEqual({ binance: true, hyperliquid: false, coinbase: false });
     });
 
     it('counts a source that never answers as unreachable once the timeout passes', async () => {

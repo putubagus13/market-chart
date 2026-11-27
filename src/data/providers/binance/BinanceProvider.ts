@@ -5,9 +5,13 @@ import { baseOf, ledgerCryptoIconUrl } from '../../symbol-base';
 import type { Unsubscribe } from '../../../core/util/types';
 
 const SPOT_BASE = 'https://api.binance.com/api/v3';
+/** Binance's market-data-only mirror: the same markets and prices as the primary, public and CORS-open. It stays
+ *  reachable on networks that block or intercept `api.binance.com`. */
+const SPOT_BASE_MIRROR = 'https://data-api.binance.vision/api/v3';
 const SPOT_BASE_US = 'https://api.binance.us/api/v3';
 const FUTURES_BASE = 'https://fapi.binance.com/fapi/v1';
 const SPOT_WS = 'wss://stream.binance.com:9443';
+const SPOT_WS_MIRROR = 'wss://data-stream.binance.vision';
 const SPOT_WS_US = 'wss://stream.binance.us:9443';
 const FUTURES_WS = 'wss://fstream.binance.com';
 /**
@@ -113,7 +117,7 @@ function selectSubTf(targetMin: number): number | null {
 /**
  * Binance market-data provider, built from scratch on the public REST + WebSocket
  * APIs — no third-party market-data SDK. Serves spot and USDT-margined perpetual futures (`SYMBOL.P`),
- * paginates past the 1000-kline cap, falls back `api.binance.com → api.binance.us`,
+ * paginates past the 1000-kline cap, falls back `api.binance.com → data-api.binance.vision → api.binance.us`,
  * and aggregates timeframes Binance doesn't serve natively (e.g. `45`, `180`). No API
  * key; live ticks stream from a native kline WebSocket (`subscribe`), with a poll
  * fallback for aggregated timeframes.
@@ -292,10 +296,11 @@ export class BinanceProvider implements DataProvider {
         };
     }
 
-    /** WebSocket host matching the resolved REST spot endpoint (`.com` default, else `.us`). */
+    /** WebSocket host matching the resolved REST spot endpoint (`.com` default, else the mirror, else `.us`). */
     private async spotWsBase(): Promise<string> {
         const base = await this.spotBase();
-        return base.includes('binance.us') ? SPOT_WS_US : SPOT_WS;
+        if (base === SPOT_BASE_MIRROR) return SPOT_WS_MIRROR;
+        return base === SPOT_BASE_US ? SPOT_WS_US : SPOT_WS;
     }
 
     /** Poll the forming candle (for aggregated timeframes Binance has no native kline stream for). */
@@ -405,24 +410,29 @@ export class BinanceProvider implements DataProvider {
     }
 
     /**
-     * Resolve the reachable spot endpoint (default, else the US mirror). The in-flight
-     * probe is shared, so a burst of concurrent first calls issues ONE ping pair, not one
-     * per call. A confirmed endpoint is cached permanently; a total failure clears the
-     * probe so a later call can retry.
+     * Resolve the reachable spot endpoint: the primary, else the market-data mirror (same markets), else the
+     * US exchange (different markets, so the last resort, and only pinged when both of the others failed). The
+     * primary and the mirror are pinged at once and the primary wins when it answers, so a hanging primary costs
+     * at most its own timeout. The in-flight probe is shared, so a burst of concurrent first calls issues ONE set
+     * of pings. A confirmed endpoint is cached permanently; a total failure clears the probe so a later call can
+     * retry.
      */
     private spotBase(): Promise<string> {
         if (this.spotBaseUrl) return Promise.resolve(this.spotBaseUrl);
         if (!this.spotBaseProbe) {
+            const ping = async (url: string): Promise<boolean> => {
+                try {
+                    return (await fetch(`${url}/ping`, { signal: AbortSignal.timeout(5000) })).ok;
+                } catch {
+                    return false; // unreachable: the next endpoint in order may do
+                }
+            };
             this.spotBaseProbe = (async () => {
                 try {
-                    for (const url of [SPOT_BASE, SPOT_BASE_US]) {
-                        try {
-                            const res = await fetch(`${url}/ping`, { signal: AbortSignal.timeout(5000) });
-                            if (res.ok) return (this.spotBaseUrl = url);
-                        } catch {
-                            // try the next endpoint
-                        }
-                    }
+                    const [primary, mirror] = [ping(SPOT_BASE), ping(SPOT_BASE_MIRROR)];
+                    if (await primary) return (this.spotBaseUrl = SPOT_BASE);
+                    if (await mirror) return (this.spotBaseUrl = SPOT_BASE_MIRROR);
+                    if (await ping(SPOT_BASE_US)) return (this.spotBaseUrl = SPOT_BASE_US);
                     return SPOT_BASE; // give up; let the actual request surface the error
                 } finally {
                     this.spotBaseProbe = null; // allow a fresh probe later if no endpoint was cached
