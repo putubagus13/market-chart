@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -22,6 +22,24 @@ describe('the static ChartLab build', () => {
         expect(files).toEqual(expect.arrayContaining(['index.html', 'assets', 'LICENSE', 'NOTICE']));
         expect(readFileSync(join(out, 'index.html'), 'utf8')).toContain('<title>ChartLab');
         expect(readFileSync(join(out, 'NOTICE'), 'utf8')).toContain('ATTRIBUTION REQUIREMENT');
+    });
+
+    it('ships the ChartLab icons and links them from the page', () => {
+        const html = readFileSync(join(out, 'index.html'), 'utf8');
+        expect(html).not.toContain('href="data:,"');
+        for (const href of ['/favicon.ico', '/chartlab-favicon.svg', '/chartlab-favicon-32.png', '/chartlab-favicon-180.png', '/site.webmanifest']) {
+            expect(html, href).toContain(`href="${href}"`);
+            expect(existsSync(join(out, href)), href).toBe(true);
+        }
+        expect(html).toMatch(/<meta name="description" content="[^"]{20,}"/);
+        expect(html).toContain('name="theme-color"');
+    });
+
+    it('has a web manifest whose icons all exist', () => {
+        const manifest = JSON.parse(readFileSync(join(out, 'site.webmanifest'), 'utf8'));
+        expect(manifest.name).toBe('ChartLab');
+        expect(manifest.icons.length).toBeGreaterThan(0);
+        for (const icon of manifest.icons) expect(existsSync(join(out, icon.src)), icon.src).toBe(true);
     });
 
     it('keeps the JavaScript under 2.5 MB', () => {
