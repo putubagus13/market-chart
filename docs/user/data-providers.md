@@ -112,6 +112,21 @@ chart.data.registerProvider('coinbase', new CoinbaseProvider());
 // BTC-USD, ETH-USD, ETH-BTC, …
 ```
 
+## The bundled Bybit provider
+
+`@luxalgo/vela/providers/bybit` is a from-scratch [Bybit](https://www.bybit.com) provider (no third-party SDK, no API key). It serves spot pairs as plain tickers (`BTCUSDT`) and USDT- and USDC-margined perpetual contracts with the same `.P` suffix the Binance provider uses (`BTCUSDT.P`). It pages past Bybit's 1000-candle cap, builds timeframes Bybit does not serve (such as `45` and `180`) from smaller candles, and streams live candles over a WebSocket.
+
+```js
+import { BybitProvider } from '@luxalgo/vela/providers/bybit';
+chart.data.registerProvider('bybit', new BybitProvider());
+// new Vela('#chart', { symbol: 'bybit:BTCUSDT.P', timeframe: '1h' })
+// or 'BYBIT:ETHUSDT.P', 'bybit:SOLUSDT', …
+```
+
+The provider uses whichever of Bybit's own hosts answers: `api.bybit.com`, then `api.bytick.com`, then `api.bybit.nl`. The last one stays reachable on networks that block the first two. Dated futures and inverse contracts are not listed.
+
+Because Bybit and Binance use the same tickers, name the venue when you register both: `bybit:BTCUSDT.P` or `binance:BTCUSDT.P`. A bare ticker routes to the first registered provider that lists it.
+
 ## The bundled Hyperliquid provider
 
 `@luxalgo/vela/providers/hyperliquid` is a from-scratch [Hyperliquid](https://hyperliquid.xyz) provider (no third-party SDK, no API key). It serves USD-margined perpetuals — **bare coins** like `BTC`, `ETH` (not `BTCUSDT`) — spot pairs (`PURR/USDC`) and the perpetuals of every builder-deployed (HIP-3) perp dex, and aggregates timeframes Hyperliquid doesn't serve natively (e.g. `45`, `180`, `360`). **Live ticks come from a real WebSocket candle stream**, with the same automatic poll fallback as Binance if a stream can't deliver.

@@ -3,6 +3,7 @@
 // usage and the playground. The npm entry (`./index`) stays lean.
 export * from './index';
 export { BinanceProvider } from './data/providers/binance';
+export { BybitProvider } from './data/providers/bybit';
 export { HyperliquidProvider } from './data/providers/hyperliquid';
 export { CoinbaseProvider } from './data/providers/coinbase';
 // The drawing color picker — reused by the widget UI for its chart/indicator

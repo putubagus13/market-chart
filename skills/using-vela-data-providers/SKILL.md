@@ -1,6 +1,6 @@
 ---
 name: using-vela-data-providers
-description: Feeds Vela charts (@luxalgo/vela) with market data - registering the bundled Binance, Coinbase and Hyperliquid providers, routing symbols (bare, PROVIDER:SYMBOL, listing prefixes like NASDAQ:AAPL), and writing a DataProvider for any other source (a broker, an exchange, your own API or database) with history, live candles, symbol search and icons. Use when a Vela chart needs data from a venue, when connecting an API to the chart, or when a chart stays empty, shows the wrong venue or never updates live.
+description: Feeds Vela charts (@luxalgo/vela) with market data - registering the bundled Binance, Bybit, Coinbase and Hyperliquid providers, routing symbols (bare, PROVIDER:SYMBOL, listing prefixes like NASDAQ:AAPL), and writing a DataProvider for any other source (a broker, an exchange, your own API or database) with history, live candles, symbol search and icons. Use when a Vela chart needs data from a venue, when connecting an API to the chart, or when a chart stays empty, shows the wrong venue or never updates live.
 license: Apache-2.0
 ---
 
@@ -13,7 +13,7 @@ renderer. Pick the source:
 | You have | Use |
 | --- | --- |
 | Bars already in memory | `data: bars` on the chart: no provider at all |
-| Crypto on Binance, Coinbase or Hyperliquid | a bundled provider (public APIs, no key) |
+| Crypto on Binance, Bybit, Coinbase or Hyperliquid | a bundled provider (public APIs, no key) |
 | Any other API, broker or database | a `DataProvider` of your own (below) |
 | A backend that must own caching and routing too | a `MarketDataFeed` through `deps.dataFeed` (rare; see the guide) |
 

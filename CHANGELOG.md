@@ -6,6 +6,10 @@ All notable changes to Vela, newest first.
 
 ### Added
 
+- **Bybit data.** A new Bybit provider (`@luxalgo/vela/providers/bybit`) serves spot pairs
+  (`BTCUSDT`) and perpetual contracts (`BTCUSDT.P`, the same suffix as Binance). It streams live
+  candles, builds timeframes Bybit does not serve from smaller ones, and uses whichever of
+  Bybit's hosts is reachable, so it works on networks that block the main one.
 - **Bar replay controls.** A **Bar replay** button in the topbar starts a replay from the
   bar you click, and a strip above the bottom bar lets you play and pause, move forward one
   bar, pick the speed from 0.5× to 10×, jump to a date from a calendar, pick another start

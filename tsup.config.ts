@@ -22,6 +22,7 @@ export default defineConfig([
             workspace: 'src/workspace/index.ts',
 
             'providers/binance': 'src/data/providers/binance/index.ts',
+            'providers/bybit': 'src/data/providers/bybit/index.ts',
             'providers/hyperliquid': 'src/data/providers/hyperliquid/index.ts',
             'providers/coinbase': 'src/data/providers/coinbase/index.ts',
             ...localeEntries,

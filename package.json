@@ -46,6 +46,11 @@
       "import": "./dist/providers/binance.js",
       "require": "./dist/providers/binance.cjs"
     },
+    "./providers/bybit": {
+      "types": "./dist/providers/bybit.d.ts",
+      "import": "./dist/providers/bybit.js",
+      "require": "./dist/providers/bybit.cjs"
+    },
     "./providers/hyperliquid": {
       "types": "./dist/providers/hyperliquid.d.ts",
       "import": "./dist/providers/hyperliquid.js",
